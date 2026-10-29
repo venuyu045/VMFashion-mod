@@ -69,8 +69,24 @@ public final class PackCatalog {
      * @param bytes       zip 字节数
      * @param url         下载地址，可绝对（{@code https://…}）也可相对（{@code /packs/{id}/{ver}/download}）
      * @param publishedAt 发布时间戳（毫秒，可 0）
+     * @param signature   Ed25519 签名（base64），覆盖 {@code packId + "\n" + version + "\n" + sha256}；
+     *                    老后端没有这个字段时为空串，由 {@code PackSignature} 按策略决定放行还是拒绝
+     * @param signingKeyId 签发密钥的 keyId（可选），对应客户端 {@code trusted_keys.json} 里的 {@code id}
      */
-    public record PackInfo(String id, String version, String sha256, long bytes, String url, long publishedAt) {
+    public record PackInfo(String id, String version, String sha256, long bytes, String url, long publishedAt,
+                           String signature, String signingKeyId) {
+
+        /**
+         * 兼容旧构造（没有签名）：老后端 / 既有单测继续可用。
+         */
+        public PackInfo(String id, String version, String sha256, long bytes, String url, long publishedAt) {
+            this(id, version, sha256, bytes, url, publishedAt, "", "");
+        }
+
+        /** 是否带签名。 */
+        public boolean hasSignature() {
+            return signature != null && !signature.isBlank();
+        }
     }
 
     private final Path cacheFile;
@@ -175,6 +191,12 @@ public final class PackCatalog {
                 item.addProperty("bytes", info.bytes());
                 item.addProperty("url", info.url());
                 item.addProperty("publishedAt", info.publishedAt());
+                if (info.hasSignature()) {
+                    item.addProperty("signature", info.signature());
+                    if (info.signingKeyId() != null && !info.signingKeyId().isBlank()) {
+                        item.addProperty("signingKeyId", info.signingKeyId());
+                    }
+                }
                 packsArray.add(item);
             }
             JsonObject root = new JsonObject();
@@ -325,7 +347,10 @@ public final class PackCatalog {
             url = PACKS_PATH + "/" + encodePathSegment(id) + "/" + encodePathSegment(version) + "/download";
         }
         long publishedAt = optLong(object, "publishedAt", 0L);
-        return new PackInfo(id, version, sha256, bytes, url, publishedAt);
+        // 签名是可选字段：老后端没有 → 空串，由 PackSignature 的策略决定"放行 + warn"还是"严格模式拒绝"
+        String signature = optString(object, "signature");
+        String signingKeyId = optString(object, "signingKeyId");
+        return new PackInfo(id, version, sha256, bytes, url, publishedAt, signature, signingKeyId);
     }
 
     /** packId 是否可安全用作目录名。 */

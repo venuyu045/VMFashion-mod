@@ -30,6 +30,13 @@ public final class BedrockAnimations {
 
     /** Bedrock 的旋转单位是度，GeckoLib 内部用弧度。 */
     private static final float DEG_TO_RAD = (float) (Math.PI / 180.0);
+    /**
+     * 单条时间轴的关键帧上限。
+     *
+     * <p>正常时装动画一条轨道几十帧就够；这个上限是防"恶意/手滑生成的 anim.json"
+     * 在首帧解析时用几十万个关键帧吃内存、并让采样退化（发布加固审查提出）。
+     */
+    private static final int MAX_KEYFRAMES_PER_TRACK = 20_000;
 
     private BedrockAnimations() {
     }
@@ -159,6 +166,13 @@ public final class BedrockAnimations {
 
         if (keyframes.isEmpty()) {
             return null;
+        }
+        if (keyframes.size() > MAX_KEYFRAMES_PER_TRACK) {
+            if (warn != null) {
+                warn.accept(context + " 的关键帧数量 " + keyframes.size() + " 超过上限 "
+                        + MAX_KEYFRAMES_PER_TRACK + "，已按上限截断");
+            }
+            keyframes = new ArrayList<>(keyframes.subList(0, MAX_KEYFRAMES_PER_TRACK));
         }
         keyframes.sort(Comparator.comparingDouble(a -> a[0]));
         // 同一时间点只保留最后一个（JSON 里重复 key 不可能出现，但 pre/post 形式可能撞）

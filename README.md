@@ -170,7 +170,11 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 5. 主线程重新加载并刷新贴图缓存 —— 下一帧就能看见对方的时装。
 
 安全边界：
-- 你**自己**放进 `packs/<packId>/` 的包永远优先，自动下发不会覆盖它；
+- **Ed25519 包签名**：后端可以给每个包签名（`signature` + `signingKeyId`），客户端用 JDK 自带
+  Ed25519 验签，验签在**解压之前**。默认是**宽松模式**（未签名的包照常安装，只记一次提示）；
+  在 `config/vmfashion/trusted_keys.json` 里设置 `"requireSignature": true` 即切换为严格模式。
+  签名密钥用 `bash tools/dev/gen-signing-key.sh` 生成（纯 JDK），私钥只放后端。
+- 你**自己**放进 `packs/<packId>/` 的包永远优先，自动下发不会覆盖它，也不参与验签；
 - 缓存超过 `maxPackCacheMb` 时按最久未用淘汰；`/vmfashion cache clear` 只清 `packs/server/`；
 - 传输安全只有 TLS + `sha256` 完整性校验（**没有**包签名，恶意后端理论上仍可下发不雅内容，
   所以后端需要审核流，见 `docs/fashion-api.md`）。
@@ -261,7 +265,9 @@ config/vmfashion/packs/<packId>/
 - **半透明排序**：自定义几何的半透明节点按 feature 分组提交、不做距离排序，
   与水/染色玻璃的前后关系由渲染阶段顺序决定。
 - **多 `minecraft:geometry`**：一个模型文件里定义多个 geometry 时只渲染第一个。
-- **包签名**：自动下发只有 TLS + `sha256` 完整性校验，没有 Ed25519 签名（依赖后端审核流）。
+- **包签名**：已支持 Ed25519 验签，但**默认宽松模式**（未签名/未知密钥的包仍会安装，只记提示）；
+  且客户端内置公钥目前是**占位值**，真正的信任锚要靠 `config/vmfashion/trusted_keys.json` 配置。
+  要"陌生人敢装"的强保证，需要官方后端发布公钥 + 开启 `requireSignature`。
 - **内容审核**：举报 / 下架是后端能力，mod 端已支持 `missing=true` 跳过。
 
 ## 许可证

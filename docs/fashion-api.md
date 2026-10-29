@@ -75,6 +75,8 @@ Authorization: Bearer <token>        # 可选：清单一般公开，带了也�
 | `bytes` | number | ✅ | zip 的**精确字节数**，必须 > 0。客户端边下边校验，多了立刻中断 |
 | `url` | string | ⬜ | 下载地址。可绝对（`https://cdn...`）也可相对（`/packs/{id}/{version}/download`）；**留空时客户端按相对地址拼** |
 | `publishedAt` | number | ⬜ | 发布时间（毫秒时间戳），仅用于展示/排查 |
+| `signature` | string | ⬜（见 §6） | Ed25519 签名，标准 base64（非 URL-safe），覆盖 `packId + "\n" + version + "\n" + sha256` 的 UTF-8 字节；**缺失时客户端默认放行并记一次 warn**，严格模式拒绝 |
+| `signingKeyId` | string | ⬜ | 签发密钥的 `keyId`，对应客户端 `trusted_keys.json` 里的 `id`；留空时客户端用**任意一把**受信公钥尝试 |
 
 ### 响应头建议
 
@@ -228,23 +230,117 @@ Retry-After: Wed, 21 Oct 2015 07:28:00 GMT   # HTTP-date
 
 ---
 
-## 6. 安全建议（强烈建议在 v1.0 前完成）
+## 6. 包签名（Ed25519）—— 契约
 
 `sha256` 只能防**传输损坏**，防不了**恶意源**：任何有上传权限的账号都能把任意 zip 推给所有玩家。
+所以 v1.0 起，清单条目可以（严格模式下**必须**）带 Ed25519 签名，客户端在**解压前**验签。
 
-1. **包签名（推荐）**：`pack.json` 增加 `"signature"` 字段，用 Ed25519 对
-   `sha256(pack.json 去掉 signature 字段后的规范化 JSON)` 签名，mod 内置公钥验签。
-   客户端目前**未实现验签**（见路线图 §6.1），但契约里先留出字段，避免以后改格式：
-   ```json
-   { "formatVersion": 1, "id": "wings", "version": "1.2.0", "signature": "ed25519:<base64>" }
-   ```
-2. **上传时静态校验**：zip 结构、`pack.json` 必填字段、模型 JSON 大小上限、拒绝可执行文件
-   （`.exe` / `.jar` / `.sh` / `.dll`）与隐藏文件。
-3. **审核流**：新包 `pending` → 管理员审核 → `published`；未发布的包不出现在 `/packs`。
-4. **下架**：把包从 `/packs` 移除即可；客户端下个 TTL 周期不再下载，但**已下载的包不会被远程删除**
-   （安全考虑：远程删除能力等于远程删文件）。如需强制清理，走 `/vmfashion cache clear`。
-5. **内容安全**：贴图是玩家可见内容，需要和皮肤站同一套审核标准。
+### 6.1 签名覆盖的规范化字节串（逐字节，不得改动）
 
+```
+UTF-8( trim(packId) + "\n" + trim(version) + "\n" + lowercase(sha256hex) )
+```
+
+- 三段用**单个** `\n`（0x0A）连接，**结尾没有换行**；
+- `packId` / `version` 两端 trim；`sha256` 统一小写 64 位 hex；
+- 签的是"包身份 + 内容哈希"：**换版本、换内容都必须重新签名**；`url` / `publishedAt` 这类易变字段
+  **不参与签名**（换 CDN 不用重签）；
+- 客户端实现：`net/PackSignature#canonicalString`（唯一口径，单测覆盖 trim / 小写 / 字段顺序）。
+
+示例（`packId=wings`、`version=1.2.0`、`sha256=9f2c…2345`）：
+
+```
+wings\n1.2.0\n9f2c1a4b7d8e0f3a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9012345
+```
+
+### 6.2 清单字段
+
+```json
+{
+  "packs": [
+    {
+      "id": "wings",
+      "version": "1.2.0",
+      "sha256": "9f2c1a4b7d8e0f3a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9012345",
+      "bytes": 481203,
+      "url": "/packs/wings/1.2.0/download",
+      "signature": "MEUCIQ…（64 字节签名的标准 base64，88 字符）",
+      "signingKeyId": "vmtools-official"
+    }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `signature` | 严格模式必填 | 64 字节 Ed25519 签名，**标准 base64**（不是 URL-safe，不带 `ed25519:` 前缀）。长度不对 / base64 非法 = 验签失败 |
+| `signingKeyId` | 可选 | 与客户端信任库里的 `id` 对应；留空时客户端用**任意一把**受信公钥尝试（便于后端轮换密钥） |
+
+### 6.3 后端签名示例（Python）
+
+```python
+import base64, hashlib
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+def sign_pack(private_key_pem: bytes, pack_id: str, version: str, zip_bytes: bytes) -> dict:
+    sha256hex = hashlib.sha256(zip_bytes).hexdigest()          # 与清单里的 sha256 同一个值
+    canonical = f"{pack_id.strip()}\n{version.strip()}\n{sha256hex.lower()}".encode("utf-8")
+    private_key = Ed25519PrivateKey.from_private_bytes(private_key_pem)  # 32 字节种子
+    signature = base64.b64encode(private_key.sign(canonical)).decode("ascii")
+    return {"sha256": sha256hex, "signature": signature, "signingKeyId": "vmtools-official"}
+```
+
+> 私钥必须只存在于后端（建议 KMS / 环境变量注入），**绝不能**进客户端仓库或 git。
+
+### 6.4 客户端信任库：`config/vmfashion/trusted_keys.json`
+
+```json
+{
+  "requireSignature": false,
+  "keys": [
+    { "id": "vmtools-official", "publicKey": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=", "note": "官方签名密钥" },
+    { "id": "my-server",        "publicKey": "（自建后端的公钥）" }
+  ]
+}
+```
+
+- `publicKey` 三种写法都接受：**裸 32 字节 base64**（推荐）、44 字节 X.509 SPKI base64（`key.getEncoded()` 的输出）、PEM（`-----BEGIN PUBLIC KEY-----`）；
+- 文件**不存在 / 坏掉 / 没有可用公钥** → 回退内置公钥 + 宽松模式（不会让客户端直接不可用）；
+- 内置公钥是**占位值**（32 字节全零，没有对应私钥）：效果是"客户端只信你配置的密钥"。正式发布前由发布负责人替换 `PackSignature.BUILTIN_PUBLIC_KEY_BASE64`；
+- 文件改动后**最多 1 分钟**自动生效（客户端按 60s 间隔重读），不用重启游戏。
+
+### 6.5 客户端验签策略（行为矩阵）
+
+| 清单条目 | `requireSignature: false`（默认） | `requireSignature: true`（严格） |
+|---|---|---|
+| 有 `signature` 且验签通过 | 安装 | 安装 |
+| 有 `signature` 但验签失败（含 keyId 未知、base64 非法、内容被改） | **拒绝**，记 warn，本会话不再重试该包 | **拒绝**，记 warn，本会话不再重试 |
+| **没有** `signature` | **放行**，记**一次** warn（"后端未启用签名"） | **拒绝**，记 warn，本会话不再重试 |
+| 用户自己放进 `packs/<packId>/` 的包 | 不验签（本地信任） | 不验签（本地信任） |
+
+- "本会话不再重试"：签名错误重试一万次也还是错，客户端把它记进内存黑名单，`/vmfashion cache clear` 或重启后才会再试；
+- 拒绝发生在**解压之前**（下载 → 校验 sha256/字节数 → **验签** → 解压），被篡改的 zip 不会落盘解压。
+
+### 6.6 为什么"默认放行"
+
+不签名就拒绝会让**所有还没升级的后端 / 自建后端全部失效**（玩家看不到别人穿的时装，且报错难懂）。
+所以默认宽松 + 一次 warn，由运营方在信任库里开 `"requireSignature": true` 收紧。
+**官方后端建议在 v1.0 发布时就打开严格模式**，并在发布说明里写清。
+
+### 6.7 密钥轮换 / 泄露处置
+
+1. **轮换**：后端换成新私钥、清单里把 `signingKeyId` 改成新 id；客户端信任库里**同时保留**新旧两把公钥一段时间（客户端会尝试所有钥匙），过渡期结束后再删旧钥匙；
+2. **泄露**：立即从客户端信任库移除该 `id`（发新版客户端 + 文档指引玩家删除 `trusted_keys.json` 里的对应条目），后端重新签发所有已发布包；
+3. 客户端**不会**因为某个包验签失败而拒绝其它包（单包黑名单，不影响全局）。
+
+### 6.8 其余服务端加固（签名之外）
+
+1. **上传时静态校验**：zip 结构、`pack.json` 必填字段、模型 JSON 大小上限、拒绝可执行文件
+   （`.exe` / `.jar` / `.sh` / `.dll`）与隐藏文件；
+2. **审核流**：新包 `pending` → 管理员审核 → `published`；未发布的包不出现在 `/packs`；
+3. **下架**：把包从 `/packs` 移除即可；客户端下个 TTL 周期不再下载，但**已下载的包不会被远程删除**
+   （安全考虑：远程删除能力等于远程删文件）。如需强制清理，走 `/vmfashion cache clear`；
+4. **内容安全**：贴图是玩家可见内容，需要和皮肤站同一套审核标准。
 ---
 
 ## 7. 鉴权
@@ -308,6 +404,10 @@ curl -s -X POST "$BASE/loadouts/resolve" \
 | 单个包下载失败 | 该包冷却 10 分钟，其它包不受影响；玩家看到"别人身上没显示这件时装" |
 | sha256 / 字节数不符 | 删除残包，不安装（不会出现"半坏"的包） |
 | zip 触发安全规则 | 拒绝安装并清理临时目录；日志里有明确原因码 |
+| 后端没给 `signature`（默认宽松模式） | 放行安装，只记**一次** warn；玩家无感 |
+| 后端没给 `signature`（严格模式） | 拒绝安装，warn 里说明"严格模式要求签名"；本会话不再重试该包 |
+| 签名无效 / keyId 未知 / base64 非法 | 拒绝安装（**解压前**拦截），warn 里带 packId；本会话不再重试 |
+| `trusted_keys.json` 缺失或损坏 | 回退内置占位公钥 + 宽松模式；带签名的包会因"无匹配公钥"被拒，无签名的包照常放行 |
 | `resolve` 缺 `packId` | 退化为按 `cosmeticId` 前缀推导 packId，仍可工作 |
 | `downloadServerPacks=false`（配置） | 整个服务空转：零请求、零磁盘写入 |
 
@@ -329,3 +429,25 @@ curl -s -X POST "$BASE/loadouts/resolve" \
 - [../README.md](../README.md) —— 玩家安装与使用
 - [pack-format.md §10](./pack-format.md#10-服务端自动下发) —— 客户端侧的包结构与安全限制
 - [architecture.md](./architecture.md) —— 资产下发链路的实现说明
+
+
+---
+
+### 附：密钥生成与轮换（客户端自带工具）
+
+客户端仓库自带一个纯 JDK 的密钥生成脚本（不引入第三方库）：
+
+```bash
+bash tools/dev/gen-signing-key.sh            # 输出到 build/signing/
+```
+
+产出三个文件：
+
+| 文件 | 用途 |
+|---|---|
+| `ed25519-public-raw.b64` | 裸 32 字节公钥（填 `trusted_keys.json` 的 `publicKey`，或替换客户端内置常量） |
+| `ed25519-public-spki.b64` | X.509 SPKI 公钥（另一种写法，二选一） |
+| `ed25519-private-pkcs8.b64` | PKCS#8 私钥 —— **只能放后端**（KMS / 环境变量），泄露等于谁都能签发时装包 |
+
+轮换流程：生成新密钥对 → 后端开始用新私钥签名 → 客户端 `trusted_keys.json` 里**同时保留新旧公钥**
+（`keys` 是数组，按 `keyId` 区分）→ 等旧客户端升级完再移除旧公钥。

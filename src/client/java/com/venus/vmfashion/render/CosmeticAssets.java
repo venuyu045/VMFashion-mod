@@ -54,8 +54,15 @@ public final class CosmeticAssets {
      * 既能挡住"每帧重试刷日志"，又能自愈。
      */
     private static final Map<String, Failure> FAILURES = new ConcurrentHashMap<>();
-    /** 失败后多久允许重试（毫秒）。取 30s：足够挡住每帧重试，玩家修好包也不用等太久。 */
-    private static final long FAILURE_RETRY_MS = 30_000L;
+    /**
+     * 失败后多久允许重试（毫秒）。
+     *
+     * <p>取 5 分钟而不是 30 秒：重试会**在渲染线程上**做磁盘 IO + GeckoLib 烘焙 + 贴图上传
+     * （见 {@link #get}），一件永久损坏的时装如果 30 秒重试一次，就是每半分钟卡一帧
+     * （发布加固审查发现的）。5 分钟把这个抖动降到可接受范围，同时保留"玩家补好包后
+     * 不用重启游戏"的自愈能力；{@code /vmfashion reload} 与 F3+T 会立刻清掉失败记录。
+     */
+    private static final long FAILURE_RETRY_MS = 5 * 60 * 1000L;
 
     /** 一条失败记录。 */
     private record Failure(String message, long atMillis) {

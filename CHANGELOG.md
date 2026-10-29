@@ -5,10 +5,29 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **后端 `scale` 进数据链路**：provider 契约改为 `Map<UUID, Map<String, WornCosmetic>>`，
+  最终缩放 = 包 scale × 网页衣柜 scale × 全局 scale（规则集中在 `ScaleMath`，仍绕挂载 pivot）。
+  上报刻意不带 scale，避免游戏内换装把网页衣柜里的设置重置成 1.0。
+- **时装包 Ed25519 签名与客户端验签**：清单增加 `signature` / `signingKeyId`，客户端用 JDK 自带
+  Ed25519 在**解压前**验签；`config/vmfashion/trusted_keys.json` 支持多把公钥与 `requireSignature` 严格模式；
+  `bash tools/dev/gen-signing-key.sh` 一键生成密钥对（纯 JDK）。
+  默认**宽松模式**：未签名包放行、签名来自未知密钥也放行（只提示一次），只有"签名结构非法 /
+  已知密钥但验不过"才拒绝 —— 这样后端开始签名不会打挂已有客户端。
+
+### 修复
+
+- **坏模型不再崩客户端**：渲染回调加顶层 `try/catch(Throwable)` + 按模型实例拉黑（reload 自愈），
+  骨骼 `cubes/quads/vertices` 为 null 时安全降级。26.x 的 flush 在主循环里，以前一个坏包能让玩家掉线。
+- 动画缓存每帧拼 String key → 两层 Map 零分配；`AnimationFrame.update()` 同一帧只求值一次
+  （主层 + emissive 层共用一组采样值）。
+- 关键帧采样线性扫描 → 二分查找（上万关键帧时快 48 倍），并给单轨道关键帧数量加上限（防恶意 anim.json）。
+- 烘焙失败的重试间隔 30 秒 → 5 分钟（重试在渲染线程做 IO + 烘焙，太频繁会周期性卡帧）。
+
 ### 计划中
 
-- 后端 `scale` 进数据链路
-- 包签名（Ed25519）与客户端验签
+- 官方签名公钥（当前内置公钥是占位值，需后端生成后替换）
 - 光影（Iris）兼容性验证
 
 ## [0.2.0] - 2026-10-29

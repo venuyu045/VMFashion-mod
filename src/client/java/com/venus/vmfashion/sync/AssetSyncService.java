@@ -10,6 +10,7 @@ import com.venus.vmfashion.loadout.LoadoutService;
 import com.venus.vmfashion.net.FashionApi;
 import com.venus.vmfashion.net.PackCatalog;
 import com.venus.vmfashion.net.PackDownloader;
+import com.venus.vmfashion.net.PackSignature;
 import com.venus.vmfashion.net.SafeZip;
 import com.venus.vmfashion.render.CosmeticAssets;
 import net.fabricmc.loader.api.FabricLoader;
@@ -99,6 +100,8 @@ public final class AssetSyncService {
     private static final long CATALOG_RETRY_MS = 30 * 1000L;
     /** LRU 时间戳落盘的间隔（别每帧 stat）。 */
     private static final long LRU_TOUCH_INTERVAL_MS = 60 * 1000L;
+    /** 信任库（trusted_keys.json）的重新读取间隔：运维改文件后最多 1 分钟生效。 */
+    private static final long TRUST_RELOAD_INTERVAL_MS = 60 * 1000L;
 
     private final AtomicInteger threadCounter = new AtomicInteger();
 
@@ -126,6 +129,19 @@ public final class AssetSyncService {
     private final Set<String> catalogMisses = ConcurrentHashMap.newKeySet();
     /** 最近被穿戴引用过的包，用于延迟刷新 LRU 时间戳（避免渲染线程做 IO）。 */
     private final Set<String> recentlyUsed = ConcurrentHashMap.newKeySet();
+
+    /**
+     * 验签失败 / 严格模式缺签名的包：<b>本会话永久跳过</b>，不走 {@code failedUntil} 的冷却重试
+     * （签名错误重试一万次也还是错，只会刷日志）。{@code initialize} / {@code clearCache} 时清空。
+     */
+    private final Set<String> rejectedBySignature = ConcurrentHashMap.newKeySet();
+    /** 信任库缓存 + 上次读取时间。 */
+    private volatile PackSignature.TrustStore trustStore;
+    private volatile long trustStoreLoadedAt;
+    /** "后端没签名、按宽松模式放行"的 warn 只打一次，避免每个包刷一行。 */
+    private final AtomicBoolean unsignedWarningLogged = new AtomicBoolean(false);
+    /** 已经提示过"签名来自未知密钥"的 packId（每包只提醒一次，避免刷屏）。 */
+    private final Set<String> unknownKeyWarned = ConcurrentHashMap.newKeySet();
 
     private final AtomicBoolean reloadPending = new AtomicBoolean(false);
     private final AtomicBoolean evicting = new AtomicBoolean(false);
@@ -203,6 +219,9 @@ public final class AssetSyncService {
             lastCatalogAttemptAt = 0L;
         }
         enabled = true;
+        rejectedBySignature.clear();
+        trustStore = null;
+        trustStoreLoadedAt = 0L;
         catalog.loadFromDiskIfNeeded(message -> VMFashionClient.LOGGER.debug("{}", message));
         rescanDisk();
         VMFashionClient.LOGGER.info("时装包自动下发已启用：{}（已缓存 {} 个包）", baseUrl, installed.size());
@@ -279,6 +298,9 @@ public final class AssetSyncService {
             recentlyUsed.add(key);
             return;
         }
+        if (rejectedBySignature.contains(key)) {
+            return; // 验签失败过：本会话不再尝试
+        }
         Long failedAt = failedUntil.get(key);
         if (failedAt != null && System.currentTimeMillis() < failedAt) {
             return;
@@ -299,6 +321,8 @@ public final class AssetSyncService {
         failedUntil.clear();
         catalogMisses.clear();
         recentlyUsed.clear();
+        // 用户显式清了缓存：给之前验签失败的包一次重新验证的机会
+        rejectedBySignature.clear();
         int removed = 0;
         Path serverRoot = PackLoader.serverPacksDir();
         if (Files.isDirectory(serverRoot)) {
@@ -450,6 +474,17 @@ public final class AssetSyncService {
                             () -> submittedEpoch != epoch)
                     .join(); // worker 线程阻塞等待是安全的
             if (submittedEpoch != epoch) {
+                return;
+            }
+
+            // 解压前验签：签名覆盖 (packId, version, sha256)，而 sha256 刚在下载时校验过，
+            // 所以这里通过 = "内容确实由受信密钥签发"。验签失败绝不落盘解压。
+            PackSignature.Decision decision = verifySignature(info);
+            if (!decision.allowed()) {
+                rejectedBySignature.add(key);
+                failedUntil.remove(key);
+                VMFashionClient.LOGGER.warn("拒绝安装时装包 {}：{}（本会话不再重试）",
+                        info.id(), describeSignatureDecision(decision));
                 return;
             }
 
@@ -756,6 +791,89 @@ public final class AssetSyncService {
                 evicting.set(false);
             }
         });
+    }
+
+    // ==================== 验签 ====================
+
+    /**
+     * 按信任库策略验证一个包。
+     *
+     * <p>三种情况：
+     * <ul>
+     *   <li>带签名且通过 → 安装；</li>
+     *   <li>没有签名 → <b>默认放行 + 记一次 warn</b>（否则所有自建后端 / 老后端全部失效），
+     *       严格模式（{@code trusted_keys.json} 里 {@code requireSignature: true}）下拒绝；</li>
+     *   <li>签名无效 / keyId 未知 → 拒绝，且本会话不再重试。</li>
+     * </ul>
+     */
+    private PackSignature.Decision verifySignature(PackCatalog.PackInfo info) {
+        PackSignature.TrustStore trust = trustStore();
+        PackSignature.Decision decision = PackSignature.evaluate(trust, info.id(), info.version(),
+                info.sha256(), info.signature(), info.signingKeyId());
+        if (decision == PackSignature.Decision.SIGNED_OK) {
+            VMFashionClient.LOGGER.debug("时装包 {} 验签通过（keyId={}）",
+                    info.id(), info.signingKeyId() == null || info.signingKeyId().isBlank()
+                            ? "任意受信密钥" : info.signingKeyId());
+        } else if (decision == PackSignature.Decision.UNKNOWN_KEY) {
+            // 每个包只提示一次：内置公钥是占位值、或后端刚换密钥时会走到这里
+            if (unknownKeyWarned.add(info.id())) {
+                VMFashionClient.LOGGER.warn("时装包 {} 带签名，但没有任何受信公钥能验证它"
+                        + "（内置公钥可能是占位值，或后端换了密钥）。宽松模式已放行；"
+                        + "要强制校验，请把后端公钥写进 config/vmfashion/trusted_keys.json 并设置 \"requireSignature\": true",
+                        info.id());
+            }
+        } else if (decision == PackSignature.Decision.UNSIGNED_ALLOWED
+                && unsignedWarningLogged.compareAndSet(false, true)) {
+            VMFashionClient.LOGGER.warn("时装包 {} 没有 Ed25519 签名，已按宽松模式放行（仅记这一次）。"
+                    + "要强制校验，请在 config/vmfashion/trusted_keys.json 里设置 \"requireSignature\": true",
+                    info.id());
+        }
+        return decision;
+    }
+
+    /** 把验签结论翻译成日志文案。 */
+    private static String describeSignatureDecision(PackSignature.Decision decision) {
+        return switch (decision) {
+            case SIGNED_OK -> "验签通过";
+            case UNSIGNED_ALLOWED -> "宽松模式放行（无签名）";
+            case UNKNOWN_KEY -> "宽松模式放行（签名来自未知密钥，请把对应公钥加入 trusted_keys.json）";
+            case UNSIGNED_REJECTED -> "严格模式要求签名，但清单里没有 signature";
+            case BAD_SIGNATURE -> "签名无效（base64/长度/keyId/内容不符）";
+        };
+    }
+
+    /** 信任库（带 1 分钟缓存；文件改了就重建，不用重启游戏）。 */
+    private PackSignature.TrustStore trustStore() {
+        long now = System.currentTimeMillis();
+        PackSignature.TrustStore current = trustStore;
+        if (current != null && now - trustStoreLoadedAt < TRUST_RELOAD_INTERVAL_MS) {
+            return current;
+        }
+        synchronized (this) {
+            current = trustStore;
+            if (current != null && now - trustStoreLoadedAt < TRUST_RELOAD_INTERVAL_MS) {
+                return current;
+            }
+            PackSignature.TrustStore loaded = PackSignature.TrustStore.load(trustedKeysFile(),
+                    message -> VMFashionClient.LOGGER.info("{}", message));
+            if (loaded.builtinOnly()) {
+                VMFashionClient.LOGGER.debug("未配置 {}，使用内置占位公钥（仅校验带签名的包会失败）",
+                        PackSignature.TRUST_FILE_NAME);
+            }
+            trustStore = loaded;
+            trustStoreLoadedAt = now;
+            return loaded;
+        }
+    }
+
+    /** {@code config/vmfashion/trusted_keys.json}。 */
+    private static Path trustedKeysFile() {
+        try {
+            return FabricLoader.getInstance().getConfigDir()
+                    .resolve("vmfashion").resolve(PackSignature.TRUST_FILE_NAME);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     // ==================== 主线程重载 ====================

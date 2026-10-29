@@ -32,6 +32,8 @@ public final class AnimationFrame {
     private final float[] scratch = new float[3];
 
     private long lastUsedNanos = startNanos;
+    /** 上次求值的时间点；同一帧里主层 + emissive 层会各调一次 {@link #update()}，第二次直接复用。 */
+    private long lastUpdateNanos = Long.MIN_VALUE;
 
     private AnimationFrame(BakedGeoModel model, BedrockAnimation animation) {
         this.animation = animation;
@@ -79,7 +81,15 @@ public final class AnimationFrame {
      * <p><b>必须在渲染回调内调用</b>：26.x 是延迟提交，submit 阶段算出来的值到 flush 时已经过时了。
      */
     public void update() {
-        double seconds = (System.nanoTime() - startNanos) / 1_000_000_000.0;
+        long now = System.nanoTime();
+        // 同一帧里主层和 emissive 层会各调一次；两次间隔通常在微秒级，
+        // 复用第一次的采样结果：既省一遍全部骨骼采样，也让两层用**同一组**值（更正确）。
+        if (now - lastUpdateNanos < 1_000_000L) {
+            lastUsedNanos = now;
+            return;
+        }
+        lastUpdateNanos = now;
+        double seconds = (now - startNanos) / 1_000_000_000.0;
         double t = AnimationTrack.wrap(seconds, animation.length(), animation.loop());
         for (Map.Entry<String, BedrockAnimation.BoneTracks> entry : animation.bones().entrySet()) {
             GeoBone bone = bonesByName.get(entry.getKey());

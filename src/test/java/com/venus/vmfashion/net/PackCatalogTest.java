@@ -208,4 +208,55 @@ class PackCatalogTest {
         assertFalse(PackCatalog.isSafePackId("with space"));
         assertFalse(PackCatalog.isSafePackId("x".repeat(65)), "超长 id 必须拒绝");
     }
+
+    // ==================== 签名（task-10） ====================
+
+    @Test
+    void parsesSignatureFields() {
+        String json = """
+                {"packs":[{"id":"wings","version":"1.2.0","sha256":"%s","bytes":10,
+                           "signature":"MEUCIQ-signature-base64","signingKeyId":"vmtools-official"}]}
+                """.formatted(VALID_SHA);
+
+        PackCatalog.PackInfo info = PackCatalog.parse(json).get("wings");
+
+        assertNotNull(info);
+        assertTrue(info.hasSignature());
+        assertEquals("MEUCIQ-signature-base64", info.signature());
+        assertEquals("vmtools-official", info.signingKeyId());
+    }
+
+    @Test
+    void absentSignatureIsEmptyAndDoesNotFailParsing() {
+        // 老后端没有签名字段：条目仍然要能解析（否则自动下发直接失效），由验签策略决定放行还是拒绝
+        String json = """
+                {"packs":[{"id":"wings","version":"1.0.0","sha256":"%s","bytes":1}]}
+                """.formatted(VALID_SHA);
+
+        PackCatalog.PackInfo info = PackCatalog.parse(json).get("wings");
+
+        assertNotNull(info);
+        assertFalse(info.hasSignature());
+        assertEquals("", info.signature());
+        assertEquals("", info.signingKeyId());
+    }
+
+    @Test
+    void signatureSurvivesDiskCacheRoundTrip(@TempDir Path tempDir) throws Exception {
+        // 离线缓存也要保留签名，否则"重启后从缓存恢复的清单"会被严格模式判为无签名
+        Path cacheFile = tempDir.resolve("pack-catalog.json");
+        PackCatalog writer = new PackCatalog(cacheFile);
+        writer.store(Map.of("wings", new PackCatalog.PackInfo(
+                "wings", "1.2.0", VALID_SHA, 10L, "/packs/wings/1.2.0/download", 0L,
+                "c2lnbmF0dXJl", "vmtools-official")), 1_000L);
+
+        PackCatalog reader = new PackCatalog(cacheFile);
+        reader.loadFromDiskIfNeeded(null);
+        PackCatalog.PackInfo info = reader.find("wings");
+
+        assertNotNull(info);
+        assertTrue(info.hasSignature());
+        assertEquals("c2lnbmF0dXJl", info.signature());
+        assertEquals("vmtools-official", info.signingKeyId());
+    }
 }

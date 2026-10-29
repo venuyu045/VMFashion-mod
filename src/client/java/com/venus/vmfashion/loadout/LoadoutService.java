@@ -158,6 +158,10 @@ public final class LoadoutService {
      * <p>热路径方法：只做一次 Map 查表 + record 字段读取，<b>零分配</b>。
      * 槽位不存在 / 玩家没有数据时返回 {@link ScaleMath#DEFAULT_SCALE}。
      *
+     * <p><b>已知不一致（本轮有意不做）</b>：本地玩家（{@code LocalLoadout}）没有 scale 存储，
+     * 所以"自己在自己屏幕上"看到的恒为 {@code 1.0}，而别人看你用的是网页衣柜里设置的值。
+     * 要统一需要给 {@code LocalLoadout} 加 scale 存储并让它参与本地渲染，属于后续改动。
+     *
      * @param uuid 玩家
      * @param slot 分类 key（小写，例如 {@code hat}）
      */
