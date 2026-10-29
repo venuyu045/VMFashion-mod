@@ -3,10 +3,18 @@
   "package": "com.venus.vmfashion.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
+    "ArmorLayerMixin",
     "AvatarRenderStateMixin",
     "AvatarRendererMixin",
     "CapeLayerMixin",
-    "PlayerModelMixin"
+    "CustomHeadLayerMixin",
+    "Deadmau5EarsLayerMixin",
+    "ParrotOnShoulderLayerMixin",
+    "PlayerItemInHandLayerMixin",
+    "PlayerModelMixin",
+    "SpinAttackEffectLayerMixin",
+    "StuckInBodyLayerMixin",
+    "WingsLayerMixin"
   ],
   "injectors": {
     "defaultRequire": 1
