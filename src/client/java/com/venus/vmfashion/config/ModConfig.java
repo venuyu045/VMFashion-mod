@@ -82,6 +82,17 @@ public class ModConfig {
     // 皮肤站 Yggdrasil 地址；留空则从 authlib-injector 的 javaagent 参数自动探测
     private String authServer = "";
 
+    // 其他玩家穿戴的定时刷新间隔（秒），<= 0 关闭；用于"别人换装后不用重进游戏"
+    private int refreshIntervalSeconds = 45;
+
+    // ==================== 资产下发配置 ====================
+
+    // 是否自动下载服务端下发的时装包（关闭后只渲染本地已装的包）
+    private boolean downloadServerPacks = true;
+
+    // 服务端时装包缓存上限（MB），超过后按最久未用淘汰
+    private int maxPackCacheMb = 512;
+
     /**
      * 从文件加载配置
      *
@@ -131,6 +142,8 @@ public class ModConfig {
         }
         apiBaseUrl = apiBaseUrl == null ? "" : apiBaseUrl.trim();
         authServer = authServer == null ? "" : authServer.trim();
+        refreshIntervalSeconds = Math.max(0, Math.min(3600, refreshIntervalSeconds));
+        maxPackCacheMb = Math.max(0, Math.min(8192, maxPackCacheMb));
     }
 
     /**
@@ -232,8 +245,40 @@ public class ModConfig {
         this.authServer = authServer == null ? "" : authServer.trim();
     }
 
+    /** 其他玩家穿戴的定时刷新间隔（秒），{@code <= 0} 表示关闭。 */
+    public int getRefreshIntervalSeconds() {
+        return refreshIntervalSeconds;
+    }
+
+    public void setRefreshIntervalSeconds(int refreshIntervalSeconds) {
+        this.refreshIntervalSeconds = Math.max(0, Math.min(3600, refreshIntervalSeconds));
+    }
+
+    // ==================== 资产下发配置 ====================
+
+    public boolean isDownloadServerPacks() {
+        return downloadServerPacks;
+    }
+
+    public void setDownloadServerPacks(boolean downloadServerPacks) {
+        this.downloadServerPacks = downloadServerPacks;
+    }
+
+    public int getMaxPackCacheMb() {
+        return maxPackCacheMb;
+    }
+
+    public void setMaxPackCacheMb(int maxPackCacheMb) {
+        this.maxPackCacheMb = Math.max(0, Math.min(8192, maxPackCacheMb));
+    }
+
     /** 是否具备云端同步的前提条件（有地址 + 开关打开）。 */
     public boolean canSync() {
         return syncEnabled && !getApiBaseUrl().isBlank();
+    }
+
+    /** 是否处于"纯本地模式"（完全没配后端地址）。 */
+    public boolean isLocalOnly() {
+        return getApiBaseUrl().isBlank();
     }
 }
