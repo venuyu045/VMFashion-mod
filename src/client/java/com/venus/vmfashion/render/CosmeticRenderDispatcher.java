@@ -11,6 +11,8 @@ import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.OverlayTexture;
+import com.venus.vmfashion.render.anim.AnimationCache;
+import com.venus.vmfashion.render.anim.AnimationFrame;
 import org.joml.Quaternionf;
 
 import java.util.Map;
@@ -68,14 +70,18 @@ public final class CosmeticRenderDispatcher {
             if (entry == null) {
                 continue;
             }
-            submitOne(poseStack, collector, packedLight, definition, entry, playerModel, globalScale);
+            submitOne(poseStack, collector, packedLight, uuid, definition, entry, playerModel, globalScale);
         }
     }
 
     private static void submitOne(PoseStack poseStack, SubmitNodeCollector collector, int packedLight,
-                                  CosmeticDefinition definition, CosmeticAssets.Entry entry,
+                                  UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
                                   PlayerModel playerModel, float globalScale) {
         float scale = definition.scale() * globalScale;
+        // 动画状态是"每玩家 × 每时装"一份：BakedGeoModel 的骨骼是所有玩家共享的，
+        // 直接把动画帧写进共享骨骼会让 A 的动画出现在 B 身上（路线图 §3.1）。
+        // 这里只取对象，真正的求值在渲染回调里做（见 GeoModelRenderer#draw）。
+        AnimationFrame frame = AnimationCache.frameFor(uuid, definition, entry);
 
         poseStack.pushPose();
         try {
@@ -86,7 +92,8 @@ public final class CosmeticRenderDispatcher {
 
             collector.submitCustomGeometry(poseStack, RenderTypes.entityCutout(entry.texture()),
                     (pose, consumer) -> GeoModelRenderer.render(
-                            entry.model(), pose, consumer, packedLight, OverlayTexture.NO_OVERLAY, WHITE));
+                            entry.model(), pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                            WHITE, frame));
 
             // emissive：只提交"emissive 贴图在该 UV 上确实不透明"的四边形。
             // 遮罩为空（没有 emissive / 全透明）时整趟 pass 都不提交。
@@ -98,7 +105,7 @@ public final class CosmeticRenderDispatcher {
                 collector.submitCustomGeometry(poseStack, RenderTypes.eyes(entry.emissive()),
                         (pose, consumer) -> GeoModelRenderer.renderEmissive(
                                 entry.model(), pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
-                                WHITE, mask));
+                                WHITE, mask, frame));
             }
             // TODO(渲染，下一轮)：以下三项需要改架构，本轮只记录取舍：
             //  1) 半透明排序：自定义几何的发光节点进 SubmitNodeCollection 的

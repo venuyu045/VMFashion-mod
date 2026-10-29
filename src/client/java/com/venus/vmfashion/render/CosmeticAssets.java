@@ -71,12 +71,22 @@ public final class CosmeticAssets {
     private CosmeticAssets() {
     }
 
-    /** 一件时装烘焙后的可渲染资源。 */
-    public record Entry(BakedGeoModel model, Identifier texture, Identifier emissive) {
+    /**
+     * 一件时装烘焙后的可渲染资源。
+     *
+     * @param animations 解析好的 Bedrock 动画（动画名 → 动画）；没有动画时是空表，不是 {@code null}
+     */
+    public record Entry(BakedGeoModel model, Identifier texture, Identifier emissive,
+                        Map<String, com.venus.vmfashion.render.anim.BedrockAnimation> animations) {
 
         /** 模型里的四边形总数，用于日志 / 自检。 */
         public int quadCount() {
             return countQuads(model.topLevelBones());
+        }
+
+        /** 有没有可播放的动画。 */
+        public boolean hasAnimation() {
+            return !animations.isEmpty();
         }
     }
 
@@ -115,6 +125,8 @@ public final class CosmeticAssets {
     public static void invalidate() {
         CACHE.clear();
         FAILURES.clear();
+        // 动画状态绑在旧的 BakedGeoModel 上（骨骼对象会变），必须一起清
+        com.venus.vmfashion.render.anim.AnimationCache.invalidate();
         // 只释放本模组注册的动态贴图；原版/其它模组的贴图不在这个集合里
         if (!REGISTERED_TEXTURES.isEmpty()) {
             try {
@@ -148,7 +160,39 @@ public final class CosmeticAssets {
         Identifier emissive = definition.emissiveFile() == null
                 ? null
                 : registerTexture(definition, definition.emissiveFile(), "emissive");
-        return new Entry(model, texture, emissive);
+        return new Entry(model, texture, emissive, loadAnimations(definition));
+    }
+
+    /**
+     * 解析 {@code anim.json}。
+     *
+     * <p>动画解析失败**不能**让整件时装加载失败（模型和贴图还是能正常显示的），
+     * 所以这里自己兜住异常，只记一条警告并返回空表。
+     */
+    private static Map<String, com.venus.vmfashion.render.anim.BedrockAnimation> loadAnimations(
+            CosmeticDefinition definition) {
+        Path file = definition.animationFile();
+        if (file == null) {
+            return Map.of();
+        }
+        try (Reader reader = Files.newBufferedReader(file, StandardCharsets.UTF_8)) {
+            JsonElement element = JsonParser.parseReader(reader);
+            if (!element.isJsonObject()) {
+                VMFashionClient.LOGGER.warn("时装 {} 的动画文件不是 JSON 对象: {}", definition.id(), file);
+                return Map.of();
+            }
+            Map<String, com.venus.vmfashion.render.anim.BedrockAnimation> animations =
+                    com.venus.vmfashion.render.anim.BedrockAnimations.parse(
+                            element.getAsJsonObject(),
+                            warning -> VMFashionClient.LOGGER.warn("时装 {} 动画: {}", definition.id(), warning));
+            if (!animations.isEmpty()) {
+                VMFashionClient.LOGGER.debug("时装 {} 解析到 {} 个动画", definition.id(), animations.size());
+            }
+            return animations;
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("时装 {} 的动画解析失败（模型仍可用）: {}", definition.id(), t.toString());
+            return Map.of();
+        }
     }
 
     private static BakedGeoModel bakeModel(CosmeticDefinition definition) throws Exception {

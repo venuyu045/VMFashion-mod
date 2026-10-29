@@ -7,6 +7,7 @@ import com.geckolib.cache.model.GeoVertex;
 import com.geckolib.cache.model.cuboid.CuboidGeoBone;
 import com.geckolib.cache.model.cuboid.GeoCube;
 import com.geckolib.animation.state.BoneSnapshot;
+import com.venus.vmfashion.render.anim.AnimationFrame;
 import com.geckolib.util.RenderUtil;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
@@ -14,6 +15,8 @@ import org.joml.Matrix3f;
 import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
+
+import java.util.Map;
 
 /**
  * 把 GeckoLib 的 {@link BakedGeoModel} 画进 26.x 的提交式渲染管线。
@@ -66,7 +69,18 @@ public final class GeoModelRenderer {
      */
     public static void render(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
                               int light, int overlay, int color) {
-        draw(model, pose, consumer, light, overlay, color, null);
+        draw(model, pose, consumer, light, overlay, color, null, null);
+    }
+
+    /**
+     * 带骨骼动画的渲染。
+     *
+     * <p>{@code frame} 为 {@code null} 时等价于静态渲染。动画求值在**回调内**进行
+     * （{@link AnimationFrame#update()}），因为 26.x 是延迟提交，submit 阶段算出来的值到 flush 时已经过时。
+     */
+    public static void render(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
+                              int light, int overlay, int color, AnimationFrame frame) {
+        draw(model, pose, consumer, light, overlay, color, null, frame);
     }
 
     /**
@@ -77,16 +91,29 @@ public final class GeoModelRenderer {
      */
     public static void renderEmissive(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
                                       int light, int overlay, int color, EmissiveMask mask) {
+        renderEmissive(model, pose, consumer, light, overlay, color, mask, null);
+    }
+
+    /** 带骨骼动画的 emissive 渲染。 */
+    public static void renderEmissive(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
+                                      int light, int overlay, int color, EmissiveMask mask,
+                                      AnimationFrame frame) {
         if (mask == null || mask.isEmpty()) {
             return;
         }
-        draw(model, pose, consumer, light, overlay, color, mask);
+        draw(model, pose, consumer, light, overlay, color, mask, frame);
     }
 
     private static void draw(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
-                             int light, int overlay, int color, EmissiveMask mask) {
+                             int light, int overlay, int color, EmissiveMask mask, AnimationFrame frame) {
         if (model == null) {
             return;
+        }
+        // 动画在这里求值（而不是 submit 阶段）：时间最接近真实渲染，也避免"提交时算好、flush 时已过时"
+        Map<GeoBone, BoneSnapshot> animated = null;
+        if (frame != null) {
+            frame.update();
+            animated = frame.snapshots();
         }
         Scratch scratch = SCRATCH.get();
         PoseStack stack = scratch.stack;
@@ -98,26 +125,38 @@ public final class GeoModelRenderer {
         }
         stack.last().set(pose);
         for (GeoBone bone : model.topLevelBones()) {
-            drawBone(bone, stack, consumer, light, overlay, color, mask, scratch);
+            drawBone(bone, stack, consumer, light, overlay, color, mask, animated, scratch);
         }
     }
 
     private static void drawBone(GeoBone bone, PoseStack stack, VertexConsumer consumer,
-                                 int light, int overlay, int color, EmissiveMask mask, Scratch scratch) {
+                                 int light, int overlay, int color, EmissiveMask mask,
+                                 Map<GeoBone, BoneSnapshot> animated, Scratch scratch) {
+        // 动画快照是"临时挂到共享骨骼上"的：画完必须还原，否则会泄漏到下一个玩家身上
+        BoneSnapshot previous = bone.frameSnapshot;
+        if (animated != null) {
+            bone.frameSnapshot = animated.get(bone);
+        }
         BoneSnapshot snapshot = bone.frameSnapshot;
         // 骨骼矩阵无条件生效：GeckoLib 的 isHidden 只隐藏"自己的立方体"，
         // 子骨骼另由 areChildrenHidden 控制（两套语义，见路线图 §3.7）
         stack.pushPose();
-        RenderUtil.prepMatrixForBone(stack, bone);
-        if ((snapshot == null || !snapshot.isHidden()) && bone instanceof CuboidGeoBone cuboid) {
-            drawCubes(cuboid, stack, consumer, light, overlay, color, mask, scratch);
-        }
-        if (snapshot == null || !snapshot.areChildrenHidden()) {
-            for (GeoBone child : bone.children()) {
-                drawBone(child, stack, consumer, light, overlay, color, mask, scratch);
+        try {
+            RenderUtil.prepMatrixForBone(stack, bone);
+            if ((snapshot == null || !snapshot.isHidden()) && bone instanceof CuboidGeoBone cuboid) {
+                drawCubes(cuboid, stack, consumer, light, overlay, color, mask, scratch);
+            }
+            if (snapshot == null || !snapshot.areChildrenHidden()) {
+                for (GeoBone child : bone.children()) {
+                    drawBone(child, stack, consumer, light, overlay, color, mask, animated, scratch);
+                }
+            }
+        } finally {
+            stack.popPose();
+            if (animated != null) {
+                bone.frameSnapshot = previous;
             }
         }
-        stack.popPose();
     }
 
     private static void drawCubes(CuboidGeoBone bone, PoseStack stack, VertexConsumer consumer,

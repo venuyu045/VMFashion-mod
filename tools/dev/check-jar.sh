@@ -39,6 +39,8 @@ require "assets/vmfashion/lang/zh_cn.json"
 require "assets/vmfashion/default_pack/pack.json"
 require "assets/vmfashion/default_pack/cosmetics/crown/model.geo.json"
 require "assets/vmfashion/default_pack/cosmetics/crown/texture.png"
+require "assets/vmfashion/default_pack/cosmetics/crown/anim.json"
+require "assets/vmfashion/default_pack/cosmetics/backboard/anim.json"
 
 # 版本占位符必须被 processResources 展开
 if unzip -p "$JAR" fabric.mod.json | grep -q '\${version}'; then

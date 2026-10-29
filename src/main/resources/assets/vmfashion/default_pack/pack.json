@@ -13,7 +13,8 @@
       "attachedBone": "body",
       "model": "cosmetics/backboard/model.geo.json",
       "texture": "cosmetics/backboard/texture.png",
-      "scale": 1.0
+      "scale": 1.0,
+      "animation": "cosmetics/backboard/anim.json"
     },
     {
       "id": "crown",
@@ -22,7 +23,8 @@
       "attachedBone": "head",
       "model": "cosmetics/crown/model.geo.json",
       "texture": "cosmetics/crown/texture.png",
-      "scale": 1.0
+      "scale": 1.0,
+      "animation": "cosmetics/crown/anim.json"
     }
   ]
 }
