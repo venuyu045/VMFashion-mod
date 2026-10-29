@@ -8,12 +8,15 @@ import com.venus.vmfashion.VMFashionClient;
 
 import java.net.URI;
 import java.net.http.HttpClient;
+import java.net.http.HttpHeaders;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeUnit;
 
 /**
  * VMTools 时装后端（{@code /api/fashion}）的 HTTP 客户端。
@@ -27,6 +30,8 @@ public final class FashionApi {
 
     private static final Gson GSON = new Gson();
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
+    /** 批量查询穿戴的端点：唯一允许重试的 POST（查询语义、幂等）。 */
+    private static final String RESOLVE_PATH = "/loadouts/resolve";
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -36,6 +41,8 @@ public final class FashionApi {
 
     private final String baseUrl;
     private volatile String token;
+    /** 弱网重试 + 熔断；整个客户端共用一个实例，熔断状态才能跨请求生效。 */
+    private final RetryPolicy retryPolicy = new RetryPolicy();
 
     public FashionApi(String baseUrl) {
         String trimmed = baseUrl == null ? "" : baseUrl.trim();
@@ -47,6 +54,10 @@ public final class FashionApi {
 
     public String baseUrl() {
         return baseUrl;
+    }
+
+    public RetryPolicy retryPolicy() {
+        return retryPolicy;
     }
 
     public String token() {
@@ -103,7 +114,7 @@ public final class FashionApi {
     public CompletableFuture<JsonObject> resolve(java.util.List<String> mcUuids) {
         JsonObject body = new JsonObject();
         body.add("mcUuids", GSON.toJsonTree(mcUuids));
-        return post("/loadouts/resolve", body, true);
+        return post(RESOLVE_PATH, body, true);
     }
 
     /**
@@ -196,7 +207,8 @@ public final class FashionApi {
             if (builder == null) {
                 return CompletableFuture.failedFuture(new ApiException(-1, "no_base_url", "未配置后端地址"));
             }
-            return send(builder.GET().build());
+            // GET 天然幂等，弱网下可以放心重试
+            return send(builder.GET().build(), RetryMode.SAFE);
         });
     }
 
@@ -206,9 +218,12 @@ public final class FashionApi {
             if (builder == null) {
                 return CompletableFuture.failedFuture(new ApiException(-1, "no_base_url", "未配置后端地址"));
             }
+            // 只有 /loadouts/resolve 是"查询语义"的 POST，可以重试；
+            // 认证（serverId 一次性）和绑定（deviceCode）重试会造成脏状态，绝不重试。
+            RetryMode mode = RESOLVE_PATH.equals(path) ? RetryMode.SAFE : RetryMode.NONE;
             return send(builder.POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                     .header("Content-Type", "application/json")
-                    .build());
+                    .build(), mode);
         });
     }
 
@@ -218,9 +233,10 @@ public final class FashionApi {
             if (builder == null) {
                 return CompletableFuture.failedFuture(new ApiException(-1, "no_base_url", "未配置后端地址"));
             }
+            // 写操作（全量覆盖穿戴）重试可能把旧状态又盖回去，只发一次
             return send(builder.PUT(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                     .header("Content-Type", "application/json")
-                    .build());
+                    .build(), RetryMode.NONE);
         });
     }
 
@@ -242,61 +258,145 @@ public final class FashionApi {
         return builder;
     }
 
-    private CompletableFuture<JsonObject> send(HttpRequest request) {
+    /** 请求是否允许重试。写操作一律 {@link #NONE}，避免重复提交。 */
+    private enum RetryMode {
+        SAFE,
+        NONE
+    }
+
+    private CompletableFuture<JsonObject> send(HttpRequest request, RetryMode mode) {
+        return sendAttempt(request, mode, 1);
+    }
+
+    /**
+     * 发一次请求，失败时按 {@link RetryPolicy} 决定"是否重试 / 等多久"。
+     *
+     * <p>重试在同一个 future 链里完成，调用方无感知；重试期间不会阻塞任何线程
+     * （用 {@code delayedExecutor} 定时，不是 {@code Thread.sleep}）。
+     */
+    private CompletableFuture<JsonObject> sendAttempt(HttpRequest request, RetryMode mode, int attempt) {
+        if (!retryPolicy.tryAcquire(System.currentTimeMillis())) {
+            // 熔断中：直接失败，避免每次渲染刷新都去戳一个已经挂掉的后端
+            return CompletableFuture.failedFuture(new ApiException(-1, "circuit_open",
+                    "时装后端连续失败，已暂停请求，稍后自动恢复"));
+        }
         return http.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenApply(response -> {
-                    String bodyText = response.body();
-                    int status = response.statusCode();
-                    if (status / 100 != 2) {
-                        String code = "http_" + status;
-                        String message = bodyText;
-                        try {
-                            JsonObject error = JsonParser.parseString(bodyText).getAsJsonObject();
-                            if (error.has("code") && !error.get("code").isJsonNull()) {
-                                code = error.get("code").getAsString();
-                            }
-                            if (error.has("message") && !error.get("message").isJsonNull()) {
-                                message = error.get("message").getAsString();
-                            } else if (error.has("detail") && !error.get("detail").isJsonNull()) {
-                                // 后端统一格式：{"detail":{"code":"...","message":"..."}}
-                                JsonElement detail = error.get("detail");
-                                if (detail.isJsonObject()) {
-                                    JsonObject detailObject = detail.getAsJsonObject();
-                                    if (detailObject.has("code") && !detailObject.get("code").isJsonNull()) {
-                                        code = detailObject.get("code").getAsString();
-                                    }
-                                    if (detailObject.has("message") && !detailObject.get("message").isJsonNull()) {
-                                        message = detailObject.get("message").getAsString();
-                                    }
-                                } else if (detail.isJsonPrimitive()) {
-                                    message = detail.getAsString();
-                                }
-                            }
-                        } catch (Exception ignored) {
-                            // 非 JSON 错误体，保留原文
-                        }
-                        throw new ApiException(status, code, message);
-                    }
-                    if (bodyText == null || bodyText.isBlank()) {
-                        return new JsonObject();
-                    }
-                    try {
-                        return JsonParser.parseString(bodyText).getAsJsonObject();
-                    } catch (Exception e) {
-                        throw new ApiException(status, "bad_json", "后端返回了无法解析的内容");
-                    }
+                    JsonObject json = parseResponse(response);
+                    retryPolicy.recordSuccess();
+                    return json;
                 })
-                .exceptionallyCompose(throwable -> {
-                    Throwable cause = throwable instanceof CompletionException && throwable.getCause() != null
-                            ? throwable.getCause()
-                            : throwable;
-                    if (cause instanceof ApiException apiException) {
-                        return CompletableFuture.failedFuture(apiException);
+                .exceptionallyCompose(throwable -> handleFailure(request, mode, attempt, throwable));
+    }
+
+    /** 失败收口：归一化成 {@link ApiException}，再决定重试还是把错误抛给调用方。 */
+    private CompletableFuture<JsonObject> handleFailure(HttpRequest request, RetryMode mode,
+                                                        int attempt, Throwable throwable) {
+        Throwable cause = unwrap(throwable);
+        ApiException failure = cause instanceof ApiException api ? api
+                : new ApiException(-1, "network_error",
+                        cause.getMessage() == null ? "网络错误" : cause.getMessage());
+
+        if (!RetryPolicy.countsTowardBreaker(failure.status(), failure.code())) {
+            // 4xx 是确定性错误（参数 / 权限 / 不存在），不计入熔断，否则一个坏请求就拉黑整个后端
+            return CompletableFuture.failedFuture(failure);
+        }
+        retryPolicy.recordFailure(System.currentTimeMillis());
+
+        boolean retryable = mode == RetryMode.SAFE
+                && RetryPolicy.isRetryable(failure.status(), failure.code())
+                && attempt < retryPolicy.maxAttempts();
+        if (!retryable) {
+            VMFashionClient.LOGGER.warn("时装后端请求失败: {}", failure.toString());
+            return CompletableFuture.failedFuture(failure);
+        }
+
+        long delay = retryPolicy.nextDelayMillis(attempt, failure.retryAfterMillis());
+        VMFashionClient.LOGGER.debug("时装后端请求失败（{}），{}ms 后重试第 {} 次",
+                failure, delay, attempt + 1);
+        return CompletableFuture.supplyAsync(() -> null,
+                        CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS))
+                .thenCompose(ignored -> sendAttempt(request, mode, attempt + 1));
+    }
+
+    /** 剥掉 CompletableFuture 包的几层壳，拿到真正的业务异常。 */
+    private static Throwable unwrap(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause instanceof CompletionException || cause instanceof ExecutionException) {
+            if (cause.getCause() == null || cause.getCause() == cause) {
+                break;
+            }
+            cause = cause.getCause();
+        }
+        return cause;
+    }
+
+    /** 2xx → JSON；非 2xx → {@link ApiException}（带 {@code Retry-After} 换算的等待时间）。 */
+    private static JsonObject parseResponse(HttpResponse<String> response) {
+        int status = response.statusCode();
+        String bodyText = response.body();
+        if (status / 100 != 2) {
+            throw parseApiError(status, bodyText, response.headers());
+        }
+        if (bodyText == null || bodyText.isBlank()) {
+            return new JsonObject();
+        }
+        try {
+            return JsonParser.parseString(bodyText).getAsJsonObject();
+        } catch (Exception e) {
+            throw new ApiException(status, "bad_json", "后端返回了无法解析的内容");
+        }
+    }
+
+    /**
+     * 解析后端错误体，抽出 {@code code} / {@code message}。
+     *
+     * <p>抽成公开静态方法是为了单测：直接喂 JSON 字符串断言解析结果，不需要起 HTTP 服务。
+     * 支持后端两种格式：
+     * <pre>
+     * {"code":"unknown_cosmetic","message":"..."}
+     * {"detail":{"code":"unknown_cosmetic","message":"..."}}   // 后端统一错误格式
+     * </pre>
+     *
+     * @param status   HTTP 状态码
+     * @param bodyText 响应体原文，可能是非 JSON
+     */
+    public static ApiException parseApiError(int status, String bodyText) {
+        return parseApiError(status, bodyText, null);
+    }
+
+    private static ApiException parseApiError(int status, String bodyText, HttpHeaders headers) {
+        String code = "http_" + status;
+        String message = bodyText == null ? "" : bodyText;
+        long retryAfterMillis = headers == null ? -1L
+                : RetryPolicy.parseRetryAfterMillis(
+                        headers.firstValue("Retry-After").orElse(null), System.currentTimeMillis());
+        try {
+            JsonObject error = JsonParser.parseString(bodyText == null ? "" : bodyText).getAsJsonObject();
+            if (error.has("code") && !error.get("code").isJsonNull()) {
+                code = error.get("code").getAsString();
+            }
+            if (error.has("message") && !error.get("message").isJsonNull()) {
+                message = error.get("message").getAsString();
+            } else if (error.has("detail") && !error.get("detail").isJsonNull()) {
+                // 后端统一格式：{"detail":{"code":"...","message":"..."}}
+                JsonElement detail = error.get("detail");
+                if (detail.isJsonObject()) {
+                    JsonObject detailObject = detail.getAsJsonObject();
+                    if (detailObject.has("code") && !detailObject.get("code").isJsonNull()) {
+                        code = detailObject.get("code").getAsString();
                     }
-                    VMFashionClient.LOGGER.warn("时装后端请求失败: {}", cause.toString());
-                    return CompletableFuture.failedFuture(
-                            new ApiException(-1, "network_error", cause.getMessage() == null ? "网络错误" : cause.getMessage()));
-                });
+                    if (detailObject.has("message") && !detailObject.get("message").isJsonNull()) {
+                        message = detailObject.get("message").getAsString();
+                    }
+                } else if (detail.isJsonPrimitive()) {
+                    message = detail.getAsString();
+                }
+            }
+        } catch (Exception ignored) {
+            // 非 JSON 错误体，保留原文
+        }
+        return new ApiException(status, code, message, retryAfterMillis);
     }
 
     /** 后端返回的非 2xx 响应。 */
@@ -304,11 +404,18 @@ public final class FashionApi {
 
         private final int status;
         private final String code;
+        /** 服务端 {@code Retry-After} 换算的等待毫秒数；{@code -1} 表示没有该响应头。 */
+        private final long retryAfterMillis;
 
         public ApiException(int status, String code, String message) {
+            this(status, code, message, -1L);
+        }
+
+        public ApiException(int status, String code, String message, long retryAfterMillis) {
             super(message);
             this.status = status;
             this.code = code;
+            this.retryAfterMillis = retryAfterMillis;
         }
 
         public int status() {
@@ -317,6 +424,10 @@ public final class FashionApi {
 
         public String code() {
             return code;
+        }
+
+        public long retryAfterMillis() {
+            return retryAfterMillis;
         }
 
         @Override

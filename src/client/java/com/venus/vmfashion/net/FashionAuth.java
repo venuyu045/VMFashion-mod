@@ -322,8 +322,7 @@ public final class FashionAuth {
                 return null;
             }
             UUID current = currentProfileId();
-            if (current != null && (stored.mcUuid() == null
-                    || !current.toString().equalsIgnoreCase(stored.mcUuid().trim()))) {
+            if (current != null && !matchesProfile(stored, current)) {
                 // 换号后绝不复用上一个账号的 token：否则新账号的穿戴会被写进旧账号
                 VMFashionClient.LOGGER.info("检测到 Minecraft 账号已切换，丢弃旧时装会话");
                 deleteSessionFile();
@@ -349,6 +348,40 @@ public final class FashionAuth {
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * 复核当前 Minecraft 账号是否仍是签发这个 session 的账号。
+     *
+     * <p>旧实现只在 {@link #restoreSession()}（启动时）比对一次 UUID，运行中换号就会
+     * 把 A 的穿戴写进 B、也会拿 B 的操作去改 A 的后端衣柜。所以进服和低频 tick 都要复核。
+     *
+     * @return {@code true} = 账号一致（或暂时判断不了）；{@code false} = 已清掉不匹配的 session
+     */
+    public boolean revalidateProfile() {
+        Session current = session;
+        if (current == null) {
+            return true;
+        }
+        UUID profileId = currentProfileId();
+        if (profileId == null) {
+            // 拿不到账号信息（客户端还在初始化 / 离线登录）时不要贸然清会话
+            return true;
+        }
+        if (!matchesProfile(current, profileId)) {
+            VMFashionClient.LOGGER.info("检测到 Minecraft 账号已切换，丢弃旧时装会话");
+            clearSession();
+            return false;
+        }
+        return true;
+    }
+
+    /** session 是否属于给定账号。 */
+    private static boolean matchesProfile(Session session, UUID currentProfileId) {
+        if (session == null || session.mcUuid() == null || currentProfileId == null) {
+            return false;
+        }
+        return currentProfileId.toString().equalsIgnoreCase(session.mcUuid().trim());
     }
 
     private void saveSession(Session session) {

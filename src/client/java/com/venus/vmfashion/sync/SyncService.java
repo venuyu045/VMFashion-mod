@@ -10,10 +10,15 @@ import com.venus.vmfashion.net.HttpLoadoutProvider;
 import com.venus.vmfashion.util.ChatUtil;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.player.AbstractClientPlayer;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
@@ -32,6 +37,15 @@ public final class SyncService {
 
     private static final SyncService INSTANCE = new SyncService();
 
+    /** tick 检查频率：约每秒一次即可，不必每 tick 读配置（tick 在主线程）。 */
+    private static final int TICK_CHECK_INTERVAL_TICKS = 20;
+    /** 运行中复核 Minecraft 账号的间隔（换号后旧 token 必须尽快作废）。 */
+    private static final long PROFILE_RECHECK_MS = 30_000L;
+    /** 401 重认证的冷却窗口：一批查询被切成多块时，避免每块都触发一次认证。 */
+    private static final long REAUTH_COOLDOWN_MS = 5_000L;
+    /** 同一条错误提示的聊天栏去重窗口，避免刷屏。 */
+    private static final long CHAT_DEDUPE_MS = 15_000L;
+
     private volatile FashionApi api;
     private volatile FashionAuth auth;
     private volatile HttpLoadoutProvider provider;
@@ -39,6 +53,18 @@ public final class SyncService {
 
     /** 绑定轮询的代数：发起 / 取消时 +1，旧轮询发现代数变了就自行停止。 */
     private volatile long bindEpoch;
+
+    /** tick 计数：把"每 tick 都跑"降频成"每秒一次"。 */
+    private int tickCounter;
+    /** 上一次刷新其他玩家穿戴的时间戳。 */
+    private volatile long lastRefreshAtMs;
+    /** 上一次复核 Minecraft 账号的时间戳。 */
+    private volatile long lastProfileCheckAtMs;
+    /** 上一次触发 401 重认证的时间戳。 */
+    private volatile long lastReauthAtMs;
+    /** 最近一条错误提示（聊天栏去重用）。 */
+    private volatile String lastChatMessage = "";
+    private volatile long lastChatAtMs;
 
     private SyncService() {
     }
@@ -57,13 +83,18 @@ public final class SyncService {
             auth = null;
             provider = null;
             LoadoutService.getInstance().setProvider(null);
-            LoadoutService.getInstance().setFallbackToLocal(true);
+            // 只有"根本没配后端地址"的纯本地模式才允许回退到本地穿戴（单机预览渲染链路）。
+            // 配了后端但把同步关掉时绝不能回退：回退会把"自己的"穿戴渲染到所有玩家身上，
+            // 带 hideParts 的时装甚至会让别人模型部位消失。
+            LoadoutService.getInstance().setFallbackToLocal(config == null || config.isLocalOnly());
             return;
         }
 
         FashionApi newApi = new FashionApi(config.getApiBaseUrl());
         FashionAuth newAuth = new FashionAuth(newApi);
         HttpLoadoutProvider newProvider = new HttpLoadoutProvider(newApi);
+        // 401 重认证钩子：provider 不能直接依赖本类（本类持有 provider，会形成循环）
+        newProvider.setReauthHook(this::reauthenticateForProvider);
 
         newAuth.restoreSession();
 
@@ -71,6 +102,9 @@ public final class SyncService {
         auth = newAuth;
         provider = newProvider;
         enabled = true;
+        lastReauthAtMs = 0L;
+        lastRefreshAtMs = 0L;
+        lastProfileCheckAtMs = 0L;
 
         LoadoutService.getInstance().setProvider(newProvider);
         // 后端可用时以远端数据为准：没有远端记录的玩家 = 没穿时装。
@@ -99,9 +133,113 @@ public final class SyncService {
     }
 
     /**
-     * 进入服务器：如果还没认证或 token 过期，后台完成一次认证。
+     * 每客户端 tick 调用（由 {@code VMFashionClient} 注册）。
+     *
+     * <p>用途：周期性刷新其他玩家的穿戴（{@code ModConfig#getRefreshIntervalSeconds()}），
+     * 让"别人换装"不用重进游戏就能看到；顺带低频复核 Minecraft 账号（换号竞态）。
+     *
+     * <p>tick 跑在主线程：这里只做计数、读配置、收集 UUID，真正的网络请求全在 IO 线程，
+     * 不能在这里做任何阻塞操作。
      */
+    public void tick() {
+        if (!enabled) {
+            return;
+        }
+        // 每 tick 都读配置太浪费；20 tick ≈ 1 秒检查一次足够
+        if (++tickCounter < TICK_CHECK_INTERVAL_TICKS) {
+            return;
+        }
+        tickCounter = 0;
+        long now = System.currentTimeMillis();
+        revalidateProfileIfDue(now);
+        refreshOthersIfDue(now);
+    }
+
+    /** 运行中复核账号：换号后旧 token 会把 A 的穿戴写进 B，必须清掉重认证。 */
+    private void revalidateProfileIfDue(long now) {
+        if (now - lastProfileCheckAtMs < PROFILE_RECHECK_MS) {
+            return;
+        }
+        lastProfileCheckAtMs = now;
+        FashionAuth currentAuth = auth;
+        if (currentAuth == null) {
+            return;
+        }
+        if (!currentAuth.revalidateProfile()) {
+            VMFashionClient.LOGGER.info("时装会话已失效（Minecraft 账号已切换），重新认证");
+            authenticateAsync(false);
+        }
+    }
+
+    /** 到了 {@code refreshIntervalSeconds} 就刷新一次其他玩家；0 表示关闭。 */
+    private void refreshOthersIfDue(long now) {
+        ModConfig config = currentConfig();
+        if (config == null) {
+            return;
+        }
+        int intervalSeconds = config.getRefreshIntervalSeconds();
+        if (intervalSeconds <= 0) {
+            return;
+        }
+        if (now - lastRefreshAtMs < intervalSeconds * 1000L) {
+            return;
+        }
+        lastRefreshAtMs = now;
+        refreshOthers();
+    }
+
+    /**
+     * 刷新当前世界里其他玩家的穿戴。
+     *
+     * <p>必须先打掉 provider 自己的条目：{@link HttpLoadoutProvider} 有 5 分钟 TTL，
+     * 不打掉的话"定时刷新"拿到的还是旧数据，等于没刷新。
+     */
+    private void refreshOthers() {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.level == null) {
+            return;
+        }
+        List<AbstractClientPlayer> players = minecraft.level.players();
+        if (players.isEmpty()) {
+            return;
+        }
+        UUID self = minecraft.player == null ? null : minecraft.player.getUUID();
+        HttpLoadoutProvider currentProvider = provider;
+        List<UUID> uuids = new ArrayList<>(players.size());
+        for (AbstractClientPlayer player : players) {
+            if (player == null) {
+                continue;
+            }
+            UUID uuid = player.getUUID();
+            if (uuid == null || uuid.equals(self)) {
+                continue;
+            }
+            if (currentProvider != null) {
+                currentProvider.invalidate(uuid);
+            }
+            uuids.add(uuid);
+        }
+        if (uuids.isEmpty()) {
+            return;
+        }
+        // 交给 LoadoutService 的节流队列：它会把这一批合并成一次批量请求。
+        // force=true：周期刷新本身就是低频的，不能被 1 秒节流窗口吞掉再等一个周期。
+        LoadoutService.getInstance().requestRemote(uuids, true);
+    }
+
+    /** 当前配置（客户端实例可能尚未初始化，必须判空）。 */
+    private static ModConfig currentConfig() {
+        VMFashionClient client = VMFashionClient.getInstance();
+        return client == null ? null : client.getConfig();
+    }
+
+    /** 进入服务器：如果还没认证或 token 过期，后台完成一次认证。 */
     public void onJoin() {
+        AssetSyncService.getInstance().onJoin();
+        long now = System.currentTimeMillis();
+        // 进服立即复核一次账号，并让周期刷新从进服时刻重新计时
+        lastRefreshAtMs = now;
+        lastProfileCheckAtMs = now;
         if (!enabled) {
             return;
         }
@@ -114,6 +252,8 @@ public final class SyncService {
         if (currentAuth == null) {
             return;
         }
+        // 进服先复核账号：上一个账号的 token 绝不能用在当前账号上
+        currentAuth.revalidateProfile();
         FashionAuth.Session session = currentAuth.session();
         if (session != null && !session.expired()) {
             // 进服时以网站衣柜为准拉取自己的穿戴；绝不拿本地空状态去覆盖云端
@@ -125,7 +265,10 @@ public final class SyncService {
 
     /** 离开服务器：清掉远端缓存，避免串服；正在等待的绑定码也作废。 */
     public void onDisconnect() {
+        AssetSyncService.getInstance().onDisconnect();
         cancelBinding();
+        lastRefreshAtMs = 0L;
+        lastProfileCheckAtMs = 0L;
         if (provider != null) {
             provider.invalidateAll();
         }
@@ -135,6 +278,112 @@ public final class SyncService {
     /** 取消正在进行的「绑定到网站」轮询（换账号 / 断线时调用）。 */
     public void cancelBinding() {
         bindEpoch++;
+    }
+
+    /**
+     * 供 {@link HttpLoadoutProvider} 在批量查询返回 401 时调用：重新认证一次。
+     *
+     * <p>为什么做成钩子：本类持有 provider，provider 再反过来依赖本类就是循环依赖。
+     * 冷却窗口用来兜住"一批查询被切成多块、每块都 401"的情况，避免认证风暴。
+     *
+     * @return 完成时 {@code true} 表示已有可用 token，provider 可以重放请求
+     */
+    private CompletableFuture<Boolean> reauthenticateForProvider() {
+        FashionAuth currentAuth = auth;
+        if (!enabled || currentAuth == null) {
+            return CompletableFuture.completedFuture(false);
+        }
+        long now = System.currentTimeMillis();
+        if (now - lastReauthAtMs < REAUTH_COOLDOWN_MS) {
+            // 冷却中：别的分块已经在认证，这里只回答"现在有没有可用 token"
+            FashionAuth.Session existing = currentAuth.session();
+            return CompletableFuture.completedFuture(existing != null && !existing.expired());
+        }
+        lastReauthAtMs = now;
+        ModConfig config = currentConfig();
+        String authServer = config == null ? "" : config.getAuthServer();
+        VMFashionClient.LOGGER.info("穿戴查询返回 401，重新认证时装后端");
+        currentAuth.clearSession();
+
+        CompletableFuture<FashionAuth.Session> future;
+        try {
+            future = currentAuth.authenticate(authServer);
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("401 后重新认证失败: {}", t.toString());
+            return CompletableFuture.completedFuture(false);
+        }
+        return future.handle((session, throwable) -> {
+            if (throwable != null) {
+                VMFashionClient.LOGGER.warn("401 后重新认证失败: {}", throwable.toString());
+                return false;
+            }
+            boolean ok = session != null && !session.expired();
+            if (ok) {
+                VMFashionClient.LOGGER.info("重新认证成功，准备重放穿戴查询");
+            }
+            return ok;
+        });
+    }
+
+    // ==================== 错误可读化 ====================
+
+    /**
+     * 后端错误码 → 玩家能看懂的中文提示。
+     *
+     * <p>旧实现把这些错误只打进日志：玩家换装没生效，却完全不知道是"时装被禁用"还是
+     * "槽位超限"还是"没绑定网站"。抽成包可见的静态方法，方便单测。
+     *
+     * @return 提示文案；{@code null} 表示不值得打扰玩家（例如纯网络抖动，聊天栏刷这个没用）
+     */
+    static String describeApiError(Throwable throwable) {
+        FashionApi.ApiException apiException = findApiException(throwable);
+        if (apiException == null) {
+            return null;
+        }
+        String code = apiException.code() == null ? "" : apiException.code().toLowerCase(Locale.ROOT);
+        String detail = apiException.getMessage() == null ? "" : apiException.getMessage();
+        return switch (code) {
+            case "unknown_cosmetic" -> "§c时装不存在或已下架：" + detail;
+            case "cosmetic_disabled" -> "§c这件时装已被管理员禁用：" + detail;
+            case "invalid_cosmetic" -> "§c后端不认识这件时装：" + detail;
+            case "too_many_items" -> "§c穿戴槽位超过后端上限，请先卸下几件再试";
+            case "not_joined" -> "§e这个账号还没绑定网站，执行 §b/vmfashion bind §e完成绑定";
+            case "no_token" -> "§e尚未登录时装后端，执行 §b/vmfashion login";
+            case "rate_limited", "too_many_requests", "http_429" -> "§e操作太频繁，请稍后再试";
+            case "invalid_request", "bad_request", "http_400" -> "§c请求被后端拒绝：" + detail;
+            case "forbidden", "http_403" -> "§c没有权限执行这个操作：" + detail;
+            default -> null;
+        };
+    }
+
+    /** 把后端错误码转成聊天栏提示（同一条消息去重，避免刷屏）。 */
+    private void notifyError(Throwable throwable) {
+        String message = describeApiError(throwable);
+        if (message == null || message.isBlank()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (message.equals(lastChatMessage) && now - lastChatAtMs < CHAT_DEDUPE_MS) {
+            return;
+        }
+        lastChatMessage = message;
+        lastChatAtMs = now;
+        ChatUtil.showLocalMessage(message);
+    }
+
+    /** 从异常链里找出后端返回的错误（可能被 CompletableFuture 包了几层）。 */
+    private static FashionApi.ApiException findApiException(Throwable throwable) {
+        Throwable cause = throwable;
+        while (cause != null) {
+            if (cause instanceof FashionApi.ApiException api) {
+                return api;
+            }
+            if (cause.getCause() == cause) {
+                break;
+            }
+            cause = cause.getCause();
+        }
+        return null;
     }
 
     /**
@@ -339,6 +588,7 @@ public final class SyncService {
                     authenticateAsync(false);
                 } else {
                     VMFashionClient.LOGGER.warn("拉取云端穿戴失败: {}", throwable.toString());
+                    notifyError(throwable);
                 }
                 return;
             }
@@ -403,6 +653,7 @@ public final class SyncService {
                     authenticateAsync(false);
                 } else {
                     VMFashionClient.LOGGER.warn("上报穿戴失败: {}", throwable.toString());
+                    notifyError(throwable);
                 }
             }
         });
