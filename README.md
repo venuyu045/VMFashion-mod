@@ -3,28 +3,46 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.1.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
-Venus Mc Fashion（简称 VMFashion）是一个 Minecraft **Fabric 纯客户端模组**，用于管理时装/外观相关内容。
+Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
+Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家身上，可以和一个网站衣柜做云端同步，
+也可以由服务端自动下发时装包 —— **服务器不需要装任何东西**。
 
-> 当前状态：**渲染链路已打通**。自定义时装包里的 Bedrock 3D 模型 + 贴图，可以显示在玩家身上
-> （第三人称，本地玩家优先；其他玩家走同一套代码，等同步层接入后按 UUID 取数据）。
-> 内置一个示例时装包，首次启动会自动释放到 `config/vmfashion/packs/example/`。
+```
+按 K 打开衣柜 ──► 选中时装 ──► 立刻穿在身上（第三人称/其他玩家都能看到）
+                      │
+                      └─► 上报到网站衣柜（可选）──► 换台电脑登录也能穿同一套
+```
+
+## 功能
+
+| 能力 | 说明 |
+|---|---|
+| **可视化衣柜** | 默认按 `K` 打开（也可 `/vmfashion open`）：分类 tab、贴图缩略图网格、搜索、试穿/脱下、实时状态 |
+| **Bedrock 模型** | `model.geo.json` 由 GeckoLib 直接烘焙，Blockbench 里怎么摆游戏里就怎么显示（脚底原点 / Y 向上 / 1/16 格） |
+| **挂载骨骼** | `attachedBone` 支持 `body` / `head` / 左右手臂 / 左右腿，跟着部位一起动 |
+| **隐藏原版部件** | `hideParts` 不只隐藏玩家模型：盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏，不会穿模 |
+| **发光层** | `emissive.png` **只让真正不透明的区域发光**（逐 quad 遮罩），不描边、不受光照影响 |
+| **云端衣柜** | 双路认证（正版 / 皮肤站）、进服自动拉取、换装即时上报、周期刷新别人身上的变化 |
+| **网站绑定** | `/vmfashion bind` 在聊天栏给出 6 位绑定码，到站点「时装绑定」页输入即可让网页衣柜和游戏内共用一份穿戴 |
+| **时装包自动下发** | 别人穿了本地没装的时装时，按 `sha256` 自动下载并安全解压到 `packs/server/`（可关） |
+| **重启不丢** | 本地穿戴落盘（`loadout.json`），纯本地模式也不会每次重启就光着 |
+| **可选 Mod Menu** | 装了 Mod Menu 会在模组列表里出现「配置」按钮，直接打开衣柜 |
 
 ## 安装（玩家）
 
-1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-0.1.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-0.2.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
-3. 启动游戏，进服后 `/vmfashion list` 查看已加载的时装，`/vmfashion equip <id>` 穿上；
-   首次启动会把示例时装包释放到 `config/vmfashion/packs/example/`。
-4. 想用云端衣柜的话，在 `config/vmfashion/config.json` 里填 `apiBaseUrl`，再执行 `/vmfashion login`
+   - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
+3. 启动游戏，按 **K** 打开衣柜；或 `/vmfashion list` 看已加载的时装、`/vmfashion equip <id>` 穿上。
+4. 想用云端衣柜：在 `config/vmfashion/config.json` 里填 `apiBaseUrl`，再执行 `/vmfashion login`
    （或 `/vmfashion bind` 绑定网站账号）。
 
-> 想自己造时装包？见 [时装包格式](#时装包格式) 与 [如何制作 / 导入时装包](#如何制作--导入时装包)。
-> 从源码构建见 [构建](#构建) 一节。
+> 首次启动会把内置示例时装包释放到 `config/vmfashion/packs/example/`，开箱即可试穿。
 
 ## 环境
 
@@ -37,132 +55,48 @@ Venus Mc Fashion（简称 VMFashion）是一个 Minecraft **Fabric 纯客户端�
 | Fabric Loader | 0.20.1 |
 | Fabric API | 0.165.0+26.3 |
 | GeckoLib | 5.5.7（`com.geckolib.*`，不是 4.x 的 `software.bernie.geckolib`） |
+| Mod Menu（可选） | 21.0.0 |
 
 ## 构建
 
 ```bash
-cd VMFashion-mod
-./gradlew build            # 需要 JDK 25
+./gradlew build          # 需要 JDK 25
 ```
 
-产物：`build/libs/vmfashion-mc26.3-0.1.0.jar`
+产物：`build/libs/vmfashion-mc26.3-<版本>.jar`（另有 `-sources.jar`）。
 
-> 离线/受限环境可加 `--offline`；容器内构建时用的是
+> 离线 / 受限环境：`./gradlew build --offline`；容器内构建用
 > `JAVA_HOME=/opt/jdk25/current GRADLE_USER_HOME=/tmp/gradle-home ./gradlew build --offline`。
 
-## 项目结构
-
-```
-src/
-├── client/java/com/venus/vmfashion/     # 业务代码（split source set）
-│   ├── VMFashionClient.java             # 模组入口点
-│   ├── config/ModConfig.java            # 配置项 + UI 常量（Gson 持久化）
-│   ├── cosmetic/                        # 时装包解析（pack.json / 自动发现 / 注册表 / 本地穿戴）
-│   ├── command/FashionCommand.java      # /vmfashion 命令
-│   ├── loadout/                         # 同步层接口：LoadoutProvider / LocalOnlyProvider / LoadoutService
-│   ├── render/                          # 渲染层
-│   │   ├── FashionRenderState.java      # 给 AvatarRenderState 挂 UUID 的接口
-│   │   ├── CosmeticAssets.java          # 磁盘 .geo.json → BakedGeoModel；PNG → DynamicTexture
-│   │   ├── GeoModelRenderer.java        # 骨骼遍历，把 GeckoLib 模型写进 VertexConsumer
-│   │   └── CosmeticRenderDispatcher.java# 每帧入口：查穿戴 → 提交几何；hideParts
-│   ├── resource/DefaultPackInstaller.java # 首次启动释放内置示例包
-│   ├── mixin/                           # 4 个客户端 mixin
-│   ├── util/ChatUtil.java, util/FileUtil.java
-│   ├── ui/UIState.java
-│   └── gui/...
-└── main/resources/
-    ├── fabric.mod.json
-    ├── vmfashion.mixins.json
-    ├── assets/vmfashion/lang/{zh_cn,en_us}.json
-    └── assets/vmfashion/default_pack/   # 内置示例时装包（首次启动释放）
-
-tools/verify/                            # 无图形环境自检脚本（不参与构建、不进 jar）
-```
-
-## 无图形环境下的验证
-
-没有显卡/显示器时，可以用 `tools/verify/run.sh` 验证渲染链路（详见 `tools/verify/README.md`）：
+### 验证
 
 ```bash
-./gradlew build && bash tools/verify/run.sh
+./gradlew test                 # 单元测试（纯逻辑，不加载 Minecraft 类）
+bash tools/verify/run.sh       # 无显卡环境的渲染链路自检（4 步）
+bash tools/dev/check-jar.sh    # 构建产物结构检查
 ```
 
-它会用**生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`、检查包围盒 / 坐标系换算 /
-attachedBone 跟随，并用 ASM 校验 4 个 mixin 的目标方法签名是否存在。
+`tools/verify/` 用**真实生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`，
+检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩，
+并用 ASM 校验全部 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
 
-
-## 时装包格式
-
-时装包放在 `.minecraft/config/vmfashion/packs/<packId>/` 下：
-
-```
-config/vmfashion/packs/<packId>/
-  pack.json                     # 必需：包元数据 + 时装清单
-  cosmetics/<cosmeticId>/
-    model.geo.json              # 必需：Bedrock 几何（format_version 1.12.0）
-    texture.png                 # 必需：贴图（建议 64x64）
-    emissive.png                # 可选：发光层贴图
-    anim.json                   # 可选：Bedrock 动画（当前只解析、不播放）
-```
-
-### pack.json
-
-```json
-{
-  "formatVersion": 1,
-  "id": "example",
-  "name": "示例时装包",
-  "version": "1.0.0",
-  "author": "you",
-  "license": "MIT",
-  "cosmetics": [
-    {
-      "id": "backboard",
-      "name": "示例背板",
-      "category": "back",
-      "attachedBone": "body",
-      "model": "cosmetics/backboard/model.geo.json",
-      "texture": "cosmetics/backboard/texture.png",
-      "emissive": "cosmetics/backboard/emissive.png",
-      "hideParts": ["head"],
-      "scale": 1.0
-    }
-  ]
-}
-```
-
-- `cosmetics` 省略时，会自动扫描 `cosmetics/*/` 目录，按文件名猜分类（`wing`/`cape`/`hat`/`pet`）。
-- `category`：`cape` / `wings` / `hat` / `back` / `pet` / `aura` / `other`，决定 UI 分组和默认挂载骨骼。
-- `attachedBone`：`body`（默认）、`head`、`left_arm`、`right_arm`、`left_leg`、`right_leg`。
-- `hideParts`：穿上后隐藏原版部件，可选 `head` / `body` / `left_arm` / `right_arm` / `left_leg` /
-  `right_leg` / `all`（对应部位的外层皮肤也会一起隐藏）。
-- `scale`：单件时装的额外缩放，会再乘上配置里的全局 `scale`。
-- 路径都是相对包根目录的路径，越界（`..`）会被拒绝。
-
-### 模型坐标系（重要）
-
-模型用 **Bedrock / Blockbench 的常规坐标**：
-
-- 原点在**玩家脚底**，**Y 轴向上**，单位是 1/16 格；
-- 玩家身高 32 单位（头顶 `y=32`），脖子在 `y=24`，身体在 `y=12..24`；
-- `+Z` 是背后（披风/翅膀放在 `z>0`），`-Z` 是正面。
-
-渲染时 mod 会自动把模型换算进原版玩家模型空间（原点在脖子、Y 轴向下），
-所以 **Blockbench 里怎么摆，游戏里就怎么显示**，不需要自己写变换。
-
-`attachedBone` 只是决定"跟着哪个部位动"：骨骼 pivot 取自原版 `PlayerModel` 的对应部位，
-模型本身仍然按脚底原点书写（例如帽子就画在 `y=32` 附近，不要画在骨头局部坐标里）。
+CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测试）→ 渲染自检 →
+语言文件一致性 → jar 结构检查；打 tag 时 `release.yml` 自动发布 jar + sha256 + release notes。
 
 ## 命令
 
 | 命令 | 说明 |
 |------|------|
-| `/vmfashion reload` | 重新扫描时装包，并清空模型/贴图缓存 |
+| `/vmfashion open`（或 `/gui`） | 打开衣柜界面（等同按 `K`） |
 | `/vmfashion list` | 列出所有已加载的包和时装 ID |
-| `/vmfashion status` | 显示当前穿戴 |
-| `/vmfashion debug` | 自检：打印配置、本地玩家 UUID、穿戴、模型烘焙结果（骨骼数/四边形数/贴图 ID） |
 | `/vmfashion equip <id>` | 穿上某件时装（按分类替换） |
 | `/vmfashion unequip <category>` | 脱下某个分类 |
+| `/vmfashion status` | 显示穿戴、登录状态、token 过期时间、资产下发与缓存占用 |
+| `/vmfashion debug` | 自检：配置、UUID、穿戴、模型烘焙结果（骨骼数/四边形数/贴图 ID） |
+| `/vmfashion diag` | 导出诊断包到 `config/vmfashion/diag/`（配置 + 包清单 + 失败原因 + 日志尾巴） |
+| `/vmfashion reload` | 重新扫描时装包并清空模型/贴图缓存（`F3+T` 也会触发） |
+| `/vmfashion config reload` | 重读 `config.json` 并重建同步层（改 `apiBaseUrl` 不用重启游戏） |
+| `/vmfashion cache clear` | 清空服务端下发的时装包缓存 |
 | `/vmfashion login` | 手动登录时装后端（换账号 / token 过期时） |
 | `/vmfashion sync` | 手动把当前穿戴推送到后端 |
 | `/vmfashion bind` | 绑定到网站：聊天栏显示 6 位绑定码，到站点「时装绑定」页输入（10 分钟内有效） |
@@ -178,19 +112,26 @@ config/vmfashion/packs/<packId>/
 | `enabled` | `true` | 总开关，关掉后不再提交任何时装几何 |
 | `renderOtherPlayers` | `true` | 是否渲染其他玩家（本地玩家第三人称始终渲染） |
 | `renderDistance` | `64` | 渲染距离（方块），`<=0` 表示不限制 |
-| `scale` | `1.0` | 全局模型缩放 |
+| `scale` | `1.0` | 全局模型缩放（与每件时装自己的 `scale` 相乘） |
 | `apiBaseUrl` | `""` | 时装后端地址，如 `https://vmtools.example.com/api/fashion`；留空 = 纯本地 |
 | `syncEnabled` | `true` | 云端同步开关（需要 `apiBaseUrl` 非空） |
 | `authServer` | `""` | 皮肤站 Yggdrasil 地址；留空则自动从 authlib-injector 的 `-javaagent:` 参数探测 |
-| `uiScale` / `animationDuration` / `toastEnabled` | — | UI 相关（沿用旧字段） |
+| `refreshIntervalSeconds` | `45` | 其他玩家穿戴的定时刷新间隔（秒），`0` = 关闭 |
+| `downloadServerPacks` | `true` | 是否自动下载服务端下发的时装包 |
+| `maxPackCacheMb` | `512` | 服务端时装包缓存上限（MB），超过后按最久未用淘汰 |
+| `uiScale` | `1.0` | 衣柜界面缩放（0.5–2.0） |
+| `animationDuration` | `200` | 界面打开动画时长（毫秒，0 = 不做动画） |
+| `toastEnabled` | `true` | 是否显示 Toast 提示 |
 
 ## 云端同步
 
 配置了 `apiBaseUrl` 之后，模组会在**进服时**自动完成认证，然后：
 
-- 先 `GET /loadout/me` 拉取自己在网站衣柜保存的穿戴（云端为准，绝不拿本地空状态覆盖）；
-- 用 `POST /loadouts/resolve` 批量拉取同服玩家的穿戴（缓存 5 分钟，最多 200 个 UUID 一次）；
-- 按 `UUID → 分类 → 时装 ID` 渲染别人身上的时装；游戏内 `/vmfashion equip` 等操作会即时 `PUT` 回去。
+- 先 `GET /loadout/me` 拉取自己在网站衣柜保存的穿戴（**云端为准**，绝不拿本地空状态覆盖）；
+- 用 `POST /loadouts/resolve` 批量拉取同服玩家的穿戴（缓存 5 分钟、超过 200 个 UUID 自动分块，
+  每 `refreshIntervalSeconds` 秒刷新一次）；
+- 按 `UUID → 分类 → 时装 ID` 渲染别人身上的时装；游戏内换装会即时 `PUT` 回去；
+- 解析不到的时装 ID 会触发**时装包自动下发**（见下）。
 
 **认证是双路的**（目标服务器同时开正版和皮肤站登录，没有离线玩家）：
 
@@ -199,8 +140,9 @@ config/vmfashion/packs/<packId>/
 | 正版 | 向 `sessionserver.mojang.com` join | `hasJoined` 反查并比对 UUID |
 | 皮肤站 | 向 `{authServer}/sessionserver/session/minecraft/join` join | 向白名单内的皮肤站 `hasJoined` 反查 |
 
-- 皮肤站地址优先从 JVM 参数 `-javaagent:...authlib-injector.jar=<URL>` 自动读取（authlib-injector 的标准启动方式），读不到才用 `authServer` 配置项。
-- 后端只信任**白名单内**的皮肤站地址（防 SSRF），所以上线新皮肤站要先加到后端的 `VMT_FASHION__YGGDRASIL_BASES`。
+- 皮肤站地址优先从 JVM 参数 `-javaagent:...authlib-injector.jar=<URL>` 自动读取，读不到才用 `authServer`。
+- 后端只信任**白名单内**的皮肤站地址（防 SSRF），上线新皮肤站要先加到后端的 `VMT_FASHION__YGGDRASIL_BASES`。
+- token 中途失效（401）会自动重新认证并重放那次请求；运行中切换账号会清掉旧会话。
 - 认证失败不影响本地时装：模组会安静地退化成纯本地模式。
 
 **绑定到网站账号**（想在网页衣柜里换装时用）：
@@ -208,89 +150,106 @@ config/vmfashion/packs/<packId>/
 1. 游戏内执行 `/vmfashion bind`，聊天栏会显示 6 位绑定码（10 分钟有效，一次性）；
 2. 打开站点 `时装绑定` 页（`/fashion/bind`），输入这个码；
 3. 绑定成功后，网页衣柜和游戏内 mod 共用同一份穿戴配置（一个网站账号可绑多个 MC 账号）。
-   没登录时 `/vmfashion bind` 会先自动走一遍认证。
 
-后端接口文档见时装后端仓库的 `docs/fashion-api.md`（自建后端时参考）。
+接口契约见 [`docs/fashion-api.md`](docs/fashion-api.md)（自建后端时参考）。
+
+### 时装包自动下发
+
+别人穿的时装你本地没装时，模组会：
+
+1. 从 `GET /packs` 拿包清单（`packId` / `version` / `sha256` / `bytes` / 下载地址）；
+2. 流式下载 + 边下边算 `sha256`，字节数不符直接丢弃；
+3. **安全解压**：拒绝 `..`、绝对路径、符号链接、大小写冲突，并限制条目数 / 单文件大小 /
+   总解压大小 / 压缩比（zip bomb）；
+4. 校验 `pack.json` 里的 `id` 与请求的 `packId` 一致后**原子移动**到 `packs/server/<packId>/`；
+5. 主线程重新加载并刷新贴图缓存 —— 下一帧就能看见对方的时装。
+
+安全边界：
+- 你**自己**放进 `packs/<packId>/` 的包永远优先，自动下发不会覆盖它；
+- 缓存超过 `maxPackCacheMb` 时按最久未用淘汰；`/vmfashion cache clear` 只清 `packs/server/`；
+- 传输安全只有 TLS + `sha256` 完整性校验（**没有**包签名，恶意后端理论上仍可下发不雅内容，
+  所以后端需要审核流，见 `docs/fashion-api.md`）。
 
 ### 和后端联调前必须先做的事
 
 1. **时装 ID 必须对齐**：后端 `PUT /loadout` 会校验 `cosmeticId` 是否存在于 catalog 且 `enabled=true`。
-   模组上报的是全局 ID `<packId>:<localId>`（例如 `example:backboard`），catalog 的 `cosmeticId`
-   必须与它**完全一致**（`packId` 与 `pack.json` 的 `id` 一致），否则上报会 400、玩家也互相看不到。
-   先调管理接口 `POST /api/fashion/admin/catalog` 把目录灌进去。
-2. **资产目前不会自动下发**：后端 `resolve` 只回 `assetKey`，模组还不会自动下载时装包。
-   也就是说，A 穿的那件时装，B 本地必须也装了同名包才渲染得出来。
-   （自动下载是下一步：按 `sha256` 拉 zip 解压到 `packs/server/`。）
-3. **皮肤站要进白名单**：后端的 `VMT_FASHION__YGGDRASIL_BASES` 里没有的皮肤站，其玩家会收到 `not_joined`。
+   模组上报的是全局 ID `<packId>:<localId>`，catalog 的 `cosmeticId` 必须与它**完全一致**
+   （`packId` 与 `pack.json` 的 `id` 一致），否则上报会 400、玩家也互相看不到。
+2. **皮肤站要进白名单**：后端的 `VMT_FASHION__YGGDRASIL_BASES` 里没有的皮肤站，其玩家会收到 `not_joined`。
+3. **nginx 上传上限**：后端上限 64MB，而生产 nginx `client_max_body_size` 只有 50m，大包会先 413。
 
-## 如何制作 / 导入时装包
+## 时装包格式
 
-1. 用 Blockbench 建一个 **Bedrock Entity** 模型（或 GeckoLib 模型），纹理尺寸建议 64x64。
-2. 模型按"脚底原点、Y 向上"摆放（可以直接在 Blockbench 的玩家模板上改）。
-3. 导出 `model.geo.json` 和 `texture.png`，按上面的目录结构放进
-   `config/vmfashion/packs/<你的包名>/cosmetics/<时装名>/`。
-4. 写 `pack.json`（或者干脆省略 `cosmetics` 让它自动扫描）。
-5. 进游戏执行 `/vmfashion reload`，然后 `/vmfashion equip <id>`；看不到就 `/vmfashion debug` 看自检输出。
+完整教程（含 Blockbench 步骤、字段表、常见错误）见 [`docs/pack-format.md`](docs/pack-format.md)。
+最小结构：
 
-导入别人做的包：整个包目录丢进 `config/vmfashion/packs/` 即可，不需要重启。
+```
+config/vmfashion/packs/<packId>/
+  pack.json                     # 包元数据 + 时装清单
+  cosmetics/<cosmeticId>/
+    model.geo.json              # Bedrock 几何（format_version 1.12.0）
+    texture.png                 # 贴图（建议 64x64）
+    emissive.png                # 可选：发光层贴图（只让不透明区域发光）
+    anim.json                   # 可选：Bedrock 动画（会被解析，暂不播放）
+    meta.json                   # 可选：单件时装元数据（优先级最高）
+```
 
-## 实现要点（给后续维护者）
+- `cosmetics` 数组省略时自动扫描 `cosmetics/*/`；
+- 元数据优先级：目录内容自动推断 → `pack.json` 的 `cosmetics` 数组 → 单件 `meta.json`；
+- 分类：`cape` / `wings` / `hat` / `back` / `pet` / `aura` / `other`；
+- `attachedBone`：`body`（默认）/ `head` / `left_arm` / `right_arm` / `left_leg` / `right_leg`；
+- `hideParts`：`head` / `body` / `left_arm` / `right_arm` / `left_leg` / `right_leg` / `all`
+  （对应部位的外层皮肤、盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏）；
+- `scale`：单件时装的额外缩放，**绕挂载骨骼的 pivot 缩放**（不是绕脚底）；
+- 所有路径相对包根目录，越界（`..`）会被拒绝。
 
-### 资源接入 GeckoLib（方案 B：直接读磁盘）
+模型坐标系：原点在**玩家脚底**、**Y 轴向上**、单位 1/16 格；`+Z` 是背后、`-Z` 是正面。
+渲染时自动换算进原版玩家模型空间，不需要自己写变换。
 
-时装包在 `config/` 下，不在资源包里。26.3 的 Fabric API 只能把 **mod 自己的**资源目录注册成内置资源包，
-没有"挂载任意目录"的接口，所以没有走资源包方案，而是：
-
-- **模型**：`GeckoLibGsonLoader#bakeGeckoLibModelFile(Identifier, JsonObject)` 是纯 JSON → `BakedGeoModel`，
-  不经过 `ResourceManager`，直接把磁盘 JSON 读成 `JsonObject` 就能烘焙（`CosmeticAssets`）。
-- **贴图**：PNG → `NativeImage` → `DynamicTexture` → `TextureManager.register`，得到一个普通 `Identifier`，
-  再交给 `RenderTypes.entityCutout(...)`。
-
-好处：不污染资源包命名空间、不依赖资源重载时机、`/vmfashion reload` 立即生效。
-
-### UUID 注入
-
-26.x 的 `AvatarRenderState` 只有 `int id`（会复用、跨维度会撞），所以：
-
-- `AvatarRenderStateMixin` 给它加 `@Unique UUID` 并实现 `FashionRenderState`；
-- `AvatarRendererMixin` 在 `extractRenderState(Avatar, AvatarRenderState, float)` 的 `RETURN` 填充。
-
-### 26.3 渲染管线关键签名
-
-| 类 | 签名 |
-|----|------|
-| `net.minecraft.client.renderer.entity.state.AvatarRenderState` | 字段 `id`（int）、`skin`、`showCape`…，**没有 UUID** |
-| `net.minecraft.client.renderer.entity.layers.CapeLayer` | `submit(PoseStack, SubmitNodeCollector, int packedLight, AvatarRenderState, float, float)` |
-| `net.minecraft.client.renderer.SubmitNodeCollector` | `submitCustomGeometry(PoseStack, RenderType, CustomGeometryRenderer)`，回调 `(PoseStack.Pose, VertexConsumer)` |
-| `net.minecraft.client.renderer.rendertype.RenderTypes` | `entityCutout(Identifier)`、`entityTranslucentEmissive(Identifier)`… |
-| `net.minecraft.client.model.player.PlayerModel` | `setupAnim(AvatarRenderState)`，字段 `head/hat/body/jacket/leftArm/...` |
-
-渲染是"提交式"的：`submitCustomGeometry` 只记录一份 `PoseStack.Pose` 快照，
-真正画的时候才回调，所以顶点必须自己乘上这个矩阵（`GeoModelRenderer` 就是这么做的）。
-
-## 当前限制
-
-- **动画**：`anim.json` 会被解析但不播放（`GeoBone.frameSnapshot` 恒为 `null`），模型只显示静态姿态。
-- **同步**：已接入 HTTP 后端（`HttpLoadoutProvider`）；**配置了后端时以远端为准**，
-  远端没有记录的玩家就是"没穿时装"。纯本地模式（未配置 `apiBaseUrl`）才会把本地穿戴
-  预览到其他玩家身上用于验证渲染链路。
-- **资产分发**：目前后端 `resolve` 只回 `assetKey`，模组**还不会自动下载时装包**——
-  对方穿的时装必须本地也装了同名包才渲染得出来。自动下载（按 sha256 拉 zip 包解压到 `packs/server/`）是下一步。
-- **缩放**：`LoadoutProvider` 只传 `slot → cosmeticId`，后端存的 `scale` 暂时没参与渲染。
-- **第一人称**：只挂在玩家模型层上，第一人称看不到自己的时装（和披风一致）。
-- **隐藏部位**：只影响原版玩家模型，不影响盔甲层/手持物。
-- **发光层**：用 `entityTranslucentEmissive` 简单叠加，没有做真正的全亮着色。
-- **GUI**：只有命令，没有可视化的时装选择界面（网站端有衣柜页）。
+导入别人做的包：整个包目录丢进 `config/vmfashion/packs/` 即可，然后 `/vmfashion reload`。
 
 ## 数据文件
 
 运行期数据保存在 `.minecraft/config/vmfashion/`：
 
-- `config.json` — 模组配置
-- `session.json` — 后端认证 token（含过期时间，过期会自动重新认证）
-- `ui_state.json` — 窗口 UI 状态
-- `packs/` — 时装包目录（首次启动会写入 `example/`）
+| 文件 / 目录 | 说明 |
+|---|---|
+| `config.json` | 模组配置 |
+| `session.json` | 后端认证 token（含过期时间，过期会自动重新认证） |
+| `loadout.json` | 本地穿戴（重启不丢；云端有数据时以云端为准） |
+| `ui_state.json` | 界面状态（上次选中的分类） |
+| `packs/` | 你自己放的时装包（首次启动会写入 `example/`） |
+| `packs/server/` | 服务端自动下发的包（可被 `/vmfashion cache clear` 清理） |
+| `diag/` | `/vmfashion diag` 导出的诊断包 |
+
+## 实现要点（给后续维护者）
+
+架构与数据流见 [`docs/architecture.md`](docs/architecture.md)。几个关键决策：
+
+- **资源不走资源包**：时装包在 `config/` 下，26.3 的 Fabric API 只能把 mod 自己的资源目录注册成内置包。
+  所以模型直接读磁盘 JSON → `GeckoLibGsonLoader#bakeGeckoLibModelFile` → `BakedGeoModel`；
+  贴图 PNG → `NativeImage` → `DynamicTexture` → `TextureManager`。`F3+T` 与 `/vmfashion reload` 都会作废缓存。
+- **提交式渲染**：26.3 的 `submitCustomGeometry` 只存一份 `PoseStack.Pose` 快照，真正画的时候才回调，
+  所以几何遍历必须写在 lambda 里，顶点自己乘矩阵。
+- **UUID 注入**：`AvatarRenderState` 只有会复用的 `int id`，由 mixin 挂 `UUID` 并实现 `FashionRenderState`。
+- **hideParts 跨层**：掩码在 `PlayerModel#setupAnim` 的 TAIL 算好写进 `AvatarRenderState`，
+  8 个额外 mixin 在各自 layer 的 `submit`/`renderArmorPiece` 处读取并取消。
+- **热路径零分配**：`PoseStack` 用 `ThreadLocal` 复用、顶点发射复用 `Vector3f/Vector4f`、
+  loadout 快照按 tick 缓存、失败缓存带 30 秒 TTL（修好包后不用重启游戏）。
+
+## 当前限制
+
+- **动画**：`anim.json` 会被解析，但**还不播放**（骨骼快照已留好接口，下一版接入）。
+- **第一人称**：只挂在玩家模型层上，第一人称看不到自己的时装（和披风一致）。
+- **后端 scale**：后端存的 `scale` 还没进数据链路（`LoadoutProvider` 只传 `slot → cosmeticId`），
+  当前只支持时装包自己声明的 `scale` 与全局 `scale`。
+- **光影**：`submitCustomGeometry` 在 Iris 下是否走光影管线未验证（没有测试环境）。
+- **半透明排序**：自定义几何的半透明节点按 feature 分组提交、不做距离排序，
+  与水/染色玻璃的前后关系由渲染阶段顺序决定。
+- **多 `minecraft:geometry`**：一个模型文件里定义多个 geometry 时只渲染第一个。
+- **包签名**：自动下发只有 TLS + `sha256` 完整性校验，没有 Ed25519 签名（依赖后端审核流）。
+- **内容审核**：举报 / 下架是后端能力，mod 端已支持 `missing=true` 跳过。
 
 ## 许可证
 
-MIT，Copyright (c) 2026 Venus
+MIT，Copyright (c) 2026 Venus。第三方组件许可见 [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md)。
