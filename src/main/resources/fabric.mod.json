@@ -3,11 +3,17 @@
   "id": "vmfashion",
   "version": "${version}",
   "name": "Venus Mc Fashion",
-  "description": "A Fabric client mod for Minecraft fashion and outfit management.",
+  "description": "Client-side cosmetics for Minecraft: wear Blockbench / Bedrock 3D outfits (capes, wings, hats, back items, pets) on your character, and optionally sync them with a web wardrobe. Pure client mod — the server needs nothing installed.",
   "authors": [
     "Venus"
   ],
+  "contact": {
+    "homepage": "https://github.com/venuyu045/VMFashion-mod",
+    "sources": "https://github.com/venuyu045/VMFashion-mod",
+    "issues": "https://github.com/venuyu045/VMFashion-mod/issues"
+  },
   "license": "MIT",
+  "icon": "assets/vmfashion/icon.png",
   "environment": "client",
   "entrypoints": {
     "client": [

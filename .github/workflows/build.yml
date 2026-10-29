@@ -1,0 +1,59 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # build 依赖 check → test，所以这一步同时跑单元测试
+      - name: Build and test
+        run: ./gradlew build --stacktrace
+
+      # 无显卡环境下验证烘焙 / 顶点 / 坐标换算 / mixin 目标方法签名
+      - name: Headless self-check (render + mixins)
+        run: bash tools/verify/run.sh
+        env:
+          VMF_OFFLINE_FLAG: ''
+
+      - name: Upload jars
+        uses: actions/upload-artifact@v4
+        with:
+          name: vmfashion-jars
+          path: build/libs/*.jar
+          if-no-files-found: error
+
+      - name: Upload test reports
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-reports
+          path: |
+            build/reports/tests/
+            build/test-results/
+          if-no-files-found: ignore

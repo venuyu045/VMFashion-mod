@@ -15,7 +15,8 @@ if [ ! -d "$MOD_DIR/build/classes/java/client" ]; then
   exit 1
 fi
 
-CP=$("$MOD_DIR/gradlew" -q -I tools/verify/print-classpath.gradle printClientCp --offline \
+OFFLINE_FLAG=${VMF_OFFLINE_FLAG---offline}
+CP=$("$MOD_DIR/gradlew" -q -I tools/verify/print-classpath.gradle printClientCp $OFFLINE_FLAG \
       | grep '^CLIENT_CP=' | sed 's/^CLIENT_CP=//')
 CP="$CP:$MOD_DIR/build/classes/java/client"
 

@@ -18,6 +18,11 @@ repositories {
 			includeGroup 'maven.modrinth'
 		}
 	}
+	maven {
+		// Mod Menu 的官方 maven（可选依赖，只在编译期用）
+		name = 'Terraformers'
+		url = 'https://maven.terraformersmc.com/releases/'
+	}
 }
 
 loom {
@@ -39,6 +44,34 @@ dependencies {
 	// GeckoLib 5 —— Bedrock 几何/动画渲染引擎（MIT）
 	// Loom 1.18（26.x 时代）已移除 modImplementation：26.x 不再需要重映射，直接用 implementation
 	implementation "maven.modrinth:geckolib:${project.geckolib_version}"
+
+	// Mod Menu —— 可选集成（只在 Mod Menu 里显示「配置」按钮，指向衣柜界面）。
+	// compileOnly：玩家不装 Mod Menu 也能正常玩；不打进 jar，由 fabric.mod.json 的 suggests 声明。
+	compileOnly "com.terraformersmc:modmenu:${project.modmenu_version}"
+
+	// 单元测试：只覆盖"不碰 Minecraft 类"的纯逻辑（包解析 / zip 安全解压 / 退避 / 持久化）
+	testImplementation platform("org.junit:junit-bom:${project.junit_version}")
+	testImplementation "org.junit.jupiter:junit-jupiter"
+	testRuntimeOnly "org.junit.platform:junit-platform-launcher"
+}
+
+// splitEnvironmentSourceSets 下 test 默认只依赖 main，这里补上 client 的产出，
+// 否则测试代码引用不到 PackLoader / CosmeticDefinition 这些类
+sourceSets {
+	test {
+		compileClasspath += sourceSets.client.output
+		runtimeClasspath += sourceSets.client.output
+	}
+}
+
+tasks.named('test') {
+	useJUnitPlatform()
+	// 内存受限环境：测试 JVM 不要开太大
+	maxHeapSize = '512m'
+	testLogging {
+		events 'passed', 'skipped', 'failed'
+		exceptionFormat = 'full'
+	}
 }
 
 processResources {
