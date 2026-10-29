@@ -87,7 +87,7 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 
 ## 检查清单（发布前）
 
-- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 217 条单测）
+- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 231 条单测）
 - [ ] `bash tools/verify/run.sh` 7 步全过
 - [ ] `bash tools/dev/check-jar.sh` / `check-mod-json.sh` / `check-lang.sh` 全过
 - [ ] `bash tools/dev/list-i18n-todo.sh --count` = 0
