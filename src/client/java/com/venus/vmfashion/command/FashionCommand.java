@@ -13,6 +13,7 @@ import com.venus.vmfashion.cosmetic.PackLoader;
 import com.venus.vmfashion.gui.KeyBindings;
 import com.venus.vmfashion.gui.WardrobeScreen;
 import com.venus.vmfashion.loadout.LoadoutService;
+import com.venus.vmfashion.loadout.WornCosmetic;
 import com.venus.vmfashion.net.FashionAuth;
 import com.venus.vmfashion.render.CosmeticAssets;
 import com.venus.vmfashion.sync.AssetSyncService;
@@ -252,17 +253,19 @@ public final class FashionCommand {
         java.util.UUID uuid = minecraft.player.getUUID();
         ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_uuid", uuid));
 
-        Map<String, String> loadout = LoadoutService.getInstance().loadoutFor(uuid);
+        // v1.0：穿戴数据带上后端 scale（WornCosmetic），debug 输出也把 scale 一起打出来
+        Map<String, WornCosmetic> loadout = LoadoutService.getInstance().loadoutFor(uuid);
         if (loadout.isEmpty()) {
             ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_empty"));
             return 1;
         }
 
-        for (Map.Entry<String, String> entry : loadout.entrySet()) {
-            CosmeticDefinition definition = LoadoutService.getInstance().resolve(entry.getValue());
+        for (Map.Entry<String, WornCosmetic> entry : loadout.entrySet()) {
+            String cosmeticId = entry.getValue().cosmeticId();
+            CosmeticDefinition definition = LoadoutService.getInstance().resolve(cosmeticId);
             if (definition == null) {
                 ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_missing",
-                        entry.getValue()));
+                        cosmeticId));
                 continue;
             }
             CosmeticAssets.Entry assets = CosmeticAssets.get(definition);
@@ -274,6 +277,8 @@ public final class FashionCommand {
             ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_entry",
                     definition.id(), definition.category().key(), definition.attachedBone(),
                     assets.model().topLevelBones().length, assets.quadCount(), assets.texture()));
+            VMFashionClient.LOGGER.debug("穿戴槽位 {}: {}（包 scale={} × 后端 scale={}）",
+                    entry.getKey(), definition.id(), definition.scale(), entry.getValue().scale());
         }
         return 1;
     }

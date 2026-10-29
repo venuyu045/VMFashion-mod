@@ -6,6 +6,8 @@ import com.google.gson.JsonObject;
 import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.loadout.LoadoutProvider;
 import com.venus.vmfashion.loadout.RequestBatching;
+import com.venus.vmfashion.loadout.ScaleMath;
+import com.venus.vmfashion.loadout.WornCosmetic;
 
 import java.util.ArrayList;
 import java.util.Collection;
@@ -26,7 +28,8 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>本地缓存 5 分钟，未命中才发请求；</li>
  *   <li>一次请求最多 {@value #MAX_BATCH} 个 UUID，超出部分<b>分块串行提交再合并</b>
  *       （旧实现直接丢弃剩余 UUID，玩家多了以后后半批人永远看不到时装）；</li>
- *   <li>只拿 {@code slot → cosmeticId}，资产由别处单独下载（后端明确不在 resolve 里内联资产）；</li>
+ *   <li>拿 {@code slot → WornCosmetic(cosmeticId, scale)}：后端存的 {@code scale} 现在会进数据链路，
+ *       资产本身由别处单独下载（后端明确不在 resolve 里内联资产）；</li>
  *   <li>token 中途过期（401）时通过注入的 {@link ReauthHook} 重新认证一次并重放本批，
  *       而不是像以前那样只打一条 warn 让别人身上的时装永久消失；</li>
  *   <li>任何失败都退化为"没有数据"，绝不影响渲染线程。</li>
@@ -59,7 +62,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
         CompletableFuture<Boolean> reauthenticate();
     }
 
-    private record Entry(Map<String, String> loadout, long fetchedAt) {
+    private record Entry(Map<String, WornCosmetic> loadout, long fetchedAt) {
 
         boolean fresh(long now) {
             return now - fetchedAt < CACHE_TTL_MS;
@@ -76,13 +79,13 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
     }
 
     @Override
-    public CompletableFuture<Map<UUID, Map<String, String>>> resolve(Collection<UUID> uuids) {
+    public CompletableFuture<Map<UUID, Map<String, WornCosmetic>>> resolve(Collection<UUID> uuids) {
         if (uuids == null || uuids.isEmpty()) {
             return CompletableFuture.completedFuture(Map.of());
         }
         long now = System.currentTimeMillis();
 
-        Map<UUID, Map<String, String>> result = new ConcurrentHashMap<>();
+        Map<UUID, Map<String, WornCosmetic>> result = new ConcurrentHashMap<>();
         List<UUID> missing = new ArrayList<>();
         for (UUID uuid : uuids) {
             if (uuid == null) {
@@ -111,7 +114,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
 
     /** 提交一批（≤ {@value #MAX_BATCH}）UUID；单批失败只丢这一批，不影响其它批。 */
     private CompletableFuture<Void> resolveBatch(List<UUID> batch,
-                                                 Map<UUID, Map<String, String>> result,
+                                                 Map<UUID, Map<String, WornCosmetic>> result,
                                                  boolean replayed) {
         List<String> requestUuids = new ArrayList<>(batch.size());
         for (UUID uuid : batch) {
@@ -140,7 +143,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
     }
 
     private CompletableFuture<Void> reauthenticateAndReplay(List<UUID> batch,
-                                                            Map<UUID, Map<String, String>> result) {
+                                                            Map<UUID, Map<String, WornCosmetic>> result) {
         ReauthHook hook = reauthHook;
         if (hook == null) {
             VMFashionClient.LOGGER.warn("穿戴查询返回 401，但没有可用的重认证钩子，本批跳过");
@@ -163,7 +166,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                         : CompletableFuture.<Void>completedFuture(null));
     }
 
-    private void parse(JsonObject response, List<UUID> requested, Map<UUID, Map<String, String>> result) {
+    private void parse(JsonObject response, List<UUID> requested, Map<UUID, Map<String, WornCosmetic>> result) {
         long now = System.currentTimeMillis();
         Map<String, UUID> byKey = new HashMap<>();
         for (UUID uuid : requested) {
@@ -177,7 +180,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                     continue;
                 }
                 try {
-                    Map<String, String> loadout = parseItems(entry.getValue());
+                    Map<String, WornCosmetic> loadout = parseItems(entry.getValue());
                     cache.put(uuid, new Entry(loadout, now));
                     result.put(uuid, loadout);
                 } catch (Exception e) {
@@ -192,7 +195,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                     UUID uuid = byKey.get(element.getAsString().toLowerCase(Locale.ROOT));
                     if (uuid != null) {
                         // 未认证的玩家当作"没有穿戴"，同样缓存，避免每帧重复请求
-                        Map<String, String> empty = Map.of();
+                        Map<String, WornCosmetic> empty = Map.of();
                         cache.put(uuid, new Entry(empty, now));
                         result.put(uuid, empty);
                     }
@@ -203,8 +206,19 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
         }
     }
 
-    private static Map<String, String> parseItems(JsonElement element) {
-        Map<String, String> loadout = new LinkedHashMap<>();
+    /**
+     * 解析一个玩家的 {@code items} 数组。
+     *
+     * <p>包级可见：单测（{@code HttpLoadoutProviderParseTest}）直接喂 JSON 字符串断言
+     * "scale 缺省 1.0 / 非法回退 / 超范围 clamp"，不需要起 HTTP 服务。
+     *
+     * <p>scale 语义：后端 {@code /loadouts/resolve} 里每个 item 的 {@code scale}（网页衣柜里调的倍率）。
+     * 缺省、非数字、{@code <= 0}、{@code NaN}/无穷 一律回退 1.0，其余 clamp 到 [0.01, 100]，
+     * 与 {@code PackLoader} 对包内 scale 的处理完全一致（见 {@link ScaleMath}）。
+     * 老后端没有这个字段时，所有时装按 1.0 渲染 —— 与改造前行为一致。
+     */
+    static Map<String, WornCosmetic> parseItems(JsonElement element) {
+        Map<String, WornCosmetic> loadout = new LinkedHashMap<>();
         if (element == null || !element.isJsonObject()) {
             return loadout;
         }
@@ -224,7 +238,9 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                 boolean missing = entry.has("missing") && !entry.get("missing").isJsonNull()
                         && entry.get("missing").getAsBoolean();
                 if (!slot.isBlank() && !cosmeticId.isBlank() && !missing) {
-                    loadout.put(slot.toLowerCase(Locale.ROOT), cosmeticId);
+                    // WornCosmetic 的构造器内部会 sanitize scale，这里不用再判一次
+                    loadout.put(slot.toLowerCase(Locale.ROOT),
+                            new WornCosmetic(cosmeticId, optFloat(entry, "scale", ScaleMath.DEFAULT_SCALE)));
                 }
             } catch (Exception ignored) {
                 // 单条脏数据不影响同批其他玩家
@@ -236,9 +252,29 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
     /**
      * 把本地穿戴上报到后端（全量覆盖，没出现的槽位会被卸下）。
      *
+     * <p><b>scale 的取舍（刻意不上报）</b>：{@code LocalLoadout} 里没有 scale 概念
+     * （本轮明确不改它的存储格式），如果这里补一个 {@code scale: 1.0}，后端会把玩家在网页衣柜里
+     * 调好的大小**重置成 1.0** —— 每次在游戏里换装都会清掉网页设置，这是明显的回归。
+     * 所以保持"不传 scale"，让后端保留已有值；解析端（{@link #parseItems}）同时容忍缺失。
+     * 将来如果 mod 有了本地 scale 编辑入口，再改成"传完整 {@code WornCosmetic} 列表"。
+     *
      * @param loadout 分类 key → 时装 ID
      */
     public CompletableFuture<Void> upload(Map<String, String> loadout) {
+        JsonObject body = buildUploadBody(loadout);
+        return api.putLoadout(body).thenAccept(response -> {
+            VMFashionClient.LOGGER.debug("穿戴已上报: {}",
+                    body.getAsJsonArray("items") == null ? 0 : body.getAsJsonArray("items").size());
+            invalidateAll();
+        });
+    }
+
+    /**
+     * 构造上报体（包级可见，便于单测断言"body 里没有 scale 字段"）。
+     *
+     * <p>故意不写 {@code scale}：见 {@link #upload(Map)} 的取舍说明。
+     */
+    static JsonObject buildUploadBody(Map<String, String> loadout) {
         JsonObject body = new JsonObject();
         JsonArray items = new JsonArray();
         if (loadout != null) {
@@ -249,16 +285,11 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                 JsonObject item = new JsonObject();
                 item.addProperty("slot", slot);
                 item.addProperty("cosmeticId", cosmeticId);
-                // 刻意不传 scale：mod 当前没有本地缩放状态，交给后端保留网页衣柜里
-                // 已保存的 scale，避免每次换装把网页设置全部重置为 1.0。
                 items.add(item);
             });
         }
         body.add("items", items);
-        return api.putLoadout(body).thenAccept(response -> {
-            VMFashionClient.LOGGER.debug("穿戴已上报: {}", items.size());
-            invalidateAll();
-        });
+        return body;
     }
 
     /** 清空缓存（换服 / 重新登录时调用）。 */
@@ -269,6 +300,18 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
     public void invalidate(UUID uuid) {
         if (uuid != null) {
             cache.remove(uuid);
+        }
+    }
+
+    /** 读 float 字段：缺失 / 类型错 / 非数字都返回 fallback（不抛异常）。 */
+    private static float optFloat(JsonObject object, String key, float fallback) {
+        try {
+            if (!object.has(key) || object.get(key).isJsonNull()) {
+                return fallback;
+            }
+            return object.get(key).getAsFloat();
+        } catch (Exception e) {
+            return fallback;
         }
     }
 

@@ -1,6 +1,7 @@
 package com.venus.vmfashion.render;
 
 import com.venus.vmfashion.loadout.LoadoutService;
+import com.venus.vmfashion.loadout.WornCosmetic;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 
@@ -15,6 +16,9 @@ import java.util.UUID;
  * {@code new LinkedHashMap}（{@code LocalLoadout#snapshot}），而它原本每帧被调<strong>两次</strong>
  * （{@code submit} 一次、{@code applyHideParts} 一次）—— 10 个玩家就是 20 个 Map/帧。
  * 这里按 tick 缓存一次，把每帧的分配降到每玩家每 tick 1 个。
+ *
+ * <p>缓存的是 {@code slot → WornCosmetic}（ID + 后端 scale），所以渲染热路径上既不用重建
+ * record，也不用为了取 scale 再查一次 Map。
  *
  * <p>为什么是 tick 而不是帧：穿戴数据只可能被 tick 线程（命令 / GUI）或网络回调线程改，
  * 网络回调写入的是并发容器、由 tick 线程消费；50ms 的延迟对肉眼不可见，
@@ -33,8 +37,8 @@ final class RenderCache {
     private RenderCache() {
     }
 
-    /** 某个玩家本 tick 的穿戴快照（分类 → 时装 ID）。 */
-    static Map<String, String> loadout(UUID uuid) {
+    /** 某个玩家本 tick 的穿戴快照（分类 → {@link WornCosmetic}）。只读，不要修改。 */
+    static Map<String, WornCosmetic> loadout(UUID uuid) {
         return entry(uuid).loadout;
     }
 
@@ -75,11 +79,11 @@ final class RenderCache {
     }
 
     private static final class Entry {
-        private final Map<String, String> loadout;
+        private final Map<String, WornCosmetic> loadout;
         private int hiddenMask;
         private boolean hiddenReady;
 
-        private Entry(Map<String, String> loadout) {
+        private Entry(Map<String, WornCosmetic> loadout) {
             this.loadout = loadout;
         }
     }

@@ -13,11 +13,11 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class LocalOnlyProvider implements LoadoutProvider {
 
-    private static final CompletableFuture<Map<UUID, Map<String, String>>> EMPTY =
+    private static final CompletableFuture<Map<UUID, Map<String, WornCosmetic>>> EMPTY =
             CompletableFuture.completedFuture(Map.of());
 
     @Override
-    public CompletableFuture<Map<UUID, Map<String, String>>> resolve(Collection<UUID> uuids) {
+    public CompletableFuture<Map<UUID, Map<String, WornCosmetic>>> resolve(Collection<UUID> uuids) {
         return EMPTY;
     }
 }

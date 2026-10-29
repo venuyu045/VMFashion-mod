@@ -38,13 +38,15 @@ public final class LoadoutService {
     private static final long MISSING_ASSET_RETRY_MS = 60_000L;
     /** 解析失败 ID 的请求记录上限，防止脏数据把内存撑大。 */
     private static final int MAX_MISSING_ASSET_ENTRIES = 512;
+    /** 本地玩家 WornCosmetic 缓存上限（本地只有 scale=1.0，按 ID 复用同一个 record）。 */
+    private static final int MAX_LOCAL_COSMETIC_CACHE = 256;
 
     private static final LoadoutService INSTANCE = new LoadoutService();
 
     private volatile LoadoutProvider provider = new LocalOnlyProvider();
     private volatile boolean fallbackToLocal = true;
 
-    private final Map<UUID, Map<String, String>> remoteLoadouts = new ConcurrentHashMap<>();
+    private final Map<UUID, Map<String, WornCosmetic>> remoteLoadouts = new ConcurrentHashMap<>();
     private final Map<UUID, Long> remoteFetchedAt = new ConcurrentHashMap<>();
     private final Map<String, CosmeticDefinition> resolved = new ConcurrentHashMap<>();
     private final Set<UUID> pendingRequests = ConcurrentHashMap.newKeySet();
@@ -52,6 +54,18 @@ public final class LoadoutService {
     private final Set<UUID> queuedRequests = ConcurrentHashMap.newKeySet();
     /** 最近一次请求资产下发的时间戳，按时装 ID 记录（见 {@link #MISSING_ASSET_RETRY_MS}）。 */
     private final Map<String, Long> missingAssetRequests = new ConcurrentHashMap<>();
+
+    /**
+     * 本地玩家的穿戴视图缓存。
+     *
+     * <p>{@link LocalLoadout} 只有 {@code slot → cosmeticId}（没有 scale 概念，按 1.0 处理），
+     * 而渲染层要的是 {@code slot → WornCosmetic}。这里把"上次的原始快照"和"派生结果"都缓存起来：
+     * 快照没变就直接返回同一个 Map（连 Map 都不重建），变了才重建，且每个 ID 复用同一个
+     * {@link WornCosmetic} record（见 {@link #wornFor(String)}）—— 热路径上不再持续制造垃圾。
+     */
+    private volatile Map<String, String> localSnapshotSource;
+    private volatile Map<String, WornCosmetic> localWornView = Map.of();
+    private final Map<String, WornCosmetic> localCosmeticCache = new ConcurrentHashMap<>();
 
     /**
      * 缓存代次：换服 / 换 provider / 重载时 +1。
@@ -114,16 +128,18 @@ public final class LoadoutService {
     }
 
     /**
-     * 取某个玩家当前穿戴（分类 → 时装 ID）。渲染线程调用，绝不阻塞。
+     * 取某个玩家当前穿戴（分类 → {@link WornCosmetic}）。渲染线程调用，绝不阻塞。
+     *
+     * <p>返回的 Map 可能是缓存的同一个实例，调用方<strong>只读</strong>，不要修改。
      */
-    public Map<String, String> loadoutFor(UUID uuid) {
+    public Map<String, WornCosmetic> loadoutFor(UUID uuid) {
         if (uuid == null) {
             return Map.of();
         }
         if (isLocalPlayer(uuid)) {
-            return LocalLoadout.getInstance().snapshot();
+            return localWornView();
         }
-        Map<String, String> remote = remoteLoadouts.get(uuid);
+        Map<String, WornCosmetic> remote = remoteLoadouts.get(uuid);
         if (remote != null) {
             Long fetchedAt = remoteFetchedAt.get(uuid);
             if (fetchedAt == null || System.currentTimeMillis() - fetchedAt >= REMOTE_CACHE_TTL_MS) {
@@ -133,23 +149,87 @@ public final class LoadoutService {
             return remote;
         }
         requestRemote(List.of(uuid));
-        return fallbackToLocal ? LocalLoadout.getInstance().snapshot() : Map.of();
+        return fallbackToLocal ? localWornView() : Map.of();
+    }
+
+    /**
+     * 某个玩家某个槽位上的时装缩放（后端 scale）。
+     *
+     * <p>热路径方法：只做一次 Map 查表 + record 字段读取，<b>零分配</b>。
+     * 槽位不存在 / 玩家没有数据时返回 {@link ScaleMath#DEFAULT_SCALE}。
+     *
+     * @param uuid 玩家
+     * @param slot 分类 key（小写，例如 {@code hat}）
+     */
+    public float scaleOf(UUID uuid, String slot) {
+        if (uuid == null || slot == null) {
+            return ScaleMath.DEFAULT_SCALE;
+        }
+        Map<String, WornCosmetic> loadout = loadoutFor(uuid);
+        if (loadout.isEmpty()) {
+            return ScaleMath.DEFAULT_SCALE;
+        }
+        WornCosmetic worn = loadout.get(slot);
+        return worn == null ? ScaleMath.DEFAULT_SCALE : worn.scale();
     }
 
     /** 某个玩家身上所有时装要隐藏的原版部件并集。 */
     public Set<String> hiddenParts(UUID uuid) {
-        Map<String, String> loadout = loadoutFor(uuid);
+        Map<String, WornCosmetic> loadout = loadoutFor(uuid);
         if (loadout.isEmpty()) {
             return Set.of();
         }
         Set<String> result = new LinkedHashSet<>();
-        for (String id : loadout.values()) {
-            CosmeticDefinition definition = resolve(id);
+        for (WornCosmetic worn : loadout.values()) {
+            CosmeticDefinition definition = resolve(worn.cosmeticId());
             if (definition != null) {
                 result.addAll(definition.hideParts());
             }
         }
         return result;
+    }
+
+    /**
+     * 本地玩家的穿戴视图（{@code slot → WornCosmetic(scale=1.0)}）。
+     *
+     * <p>{@link LocalLoadout} 的存储格式里没有 scale（本轮明确不改它），所以本地一律 1.0：
+     * 网页衣柜里调的 scale 只影响"别人看你"的效果；自己看自己仍是 1.0。
+     * 要统一的话需要给 {@code LocalLoadout} 加 scale 存储，属于后续改动。
+     */
+    private Map<String, WornCosmetic> localWornView() {
+        Map<String, String> snapshot = LocalLoadout.getInstance().snapshot();
+        Map<String, String> cachedSource = localSnapshotSource;
+        if (cachedSource != null && cachedSource.equals(snapshot)) {
+            return localWornView;
+        }
+        Map<String, WornCosmetic> built = new LinkedHashMap<>(Math.max(4, snapshot.size()));
+        snapshot.forEach((slot, cosmeticId) -> {
+            if (slot != null && cosmeticId != null && !cosmeticId.isBlank()) {
+                built.put(slot, wornFor(cosmeticId));
+            }
+        });
+        Map<String, WornCosmetic> view = built.isEmpty()
+                ? Map.of()
+                // 用 unmodifiableMap 而不是 Map.copyOf：保留 LinkedHashMap 的插入顺序，
+                // 多件时装的提交顺序才是稳定的（Map.copyOf 的迭代顺序未定义）
+                : java.util.Collections.unmodifiableMap(built);
+        localSnapshotSource = snapshot;
+        localWornView = view;
+        return view;
+    }
+
+    /** 本地穿戴用：同一个 ID 复用同一个不可变 record，避免每 tick 新建。 */
+    private WornCosmetic wornFor(String cosmeticId) {
+        WornCosmetic cached = localCosmeticCache.get(cosmeticId);
+        if (cached != null) {
+            return cached;
+        }
+        if (localCosmeticCache.size() >= MAX_LOCAL_COSMETIC_CACHE) {
+            localCosmeticCache.clear();
+        }
+        WornCosmetic created = WornCosmetic.of(cosmeticId);
+        localCosmeticCache.put(cosmeticId, created);
+        return created;
     }
 
     /** ID → 定义，带缓存；时装包重载后调用 {@link #invalidate()}。 */

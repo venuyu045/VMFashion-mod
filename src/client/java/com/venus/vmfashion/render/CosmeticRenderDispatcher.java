@@ -5,6 +5,8 @@ import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.config.ModConfig;
 import com.venus.vmfashion.cosmetic.CosmeticDefinition;
 import com.venus.vmfashion.loadout.LoadoutService;
+import com.venus.vmfashion.loadout.ScaleMath;
+import com.venus.vmfashion.loadout.WornCosmetic;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.renderer.SubmitNodeCollector;
@@ -55,14 +57,14 @@ public final class CosmeticRenderDispatcher {
         }
         UUID uuid = uuidOf(state);
         // 每 tick 只取一次快照：loadoutFor 对本地玩家会拷贝整个 Map（见 RenderCache 注释）
-        Map<String, String> loadout = RenderCache.loadout(uuid);
+        Map<String, WornCosmetic> loadout = RenderCache.loadout(uuid);
         if (loadout.isEmpty()) {
             return;
         }
         LoadoutService loadouts = LoadoutService.getInstance();
         float globalScale = config().getScale();
-        for (String cosmeticId : loadout.values()) {
-            CosmeticDefinition definition = loadouts.resolve(cosmeticId);
+        for (WornCosmetic worn : loadout.values()) {
+            CosmeticDefinition definition = loadouts.resolve(worn.cosmeticId());
             if (definition == null) {
                 continue;
             }
@@ -70,7 +72,8 @@ public final class CosmeticRenderDispatcher {
             if (entry == null) {
                 continue;
             }
-            submitOne(poseStack, collector, packedLight, uuid, definition, entry, playerModel, globalScale);
+            submitOne(poseStack, collector, packedLight, uuid, definition, entry, worn.scale(),
+                    playerModel, globalScale);
         }
     }
 
@@ -81,11 +84,15 @@ public final class CosmeticRenderDispatcher {
      * 同样是"原版模型部件空间"（部件自己的 pivot 由 {@code submitModelPart} 内部施加），
      * 所以 {@link #applyModelSpace} + {@link #applyAttachment} 的换算是<strong>同一套</strong>，
      * 不需要另写一份（见 {@link FirstPersonRenderer} 的注释与 tools/verify 的数值自检）。
+     *
+     * @param backendScale 后端 / 网页衣柜给这一件时装设的缩放（本地玩家恒为 1.0）
+     * @param globalScale  客户端配置的全局缩放
      */
     static void submitOne(PoseStack poseStack, SubmitNodeCollector collector, int packedLight,
                           UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
-                          PlayerModel playerModel, float globalScale) {
-        float scale = definition.scale() * globalScale;
+                          float backendScale, PlayerModel playerModel, float globalScale) {
+        // 三层缩放：包自带 × 后端（网页衣柜）× 全局（config.json），规则集中在 ScaleMath（可单测）
+        float scale = ScaleMath.combine(definition.scale(), backendScale, globalScale);
         // 动画状态是"每玩家 × 每时装"一份：BakedGeoModel 的骨骼是所有玩家共享的，
         // 直接把动画帧写进共享骨骼会让 A 的动画出现在 B 身上（路线图 §3.1）。
         // 这里只取对象，真正的求值在渲染回调里做（见 GeoModelRenderer#draw）。
@@ -310,14 +317,14 @@ public final class CosmeticRenderDispatcher {
      * <p>只有"模型/贴图真的加载成功"的时装才参与：否则资源损坏时玩家会变成隐形人
      * （连原版皮肤都看不到）。这里直接用位或累加，不建中间 Set。
      */
-    static int computeHiddenMask(Map<String, String> loadout) {
+    static int computeHiddenMask(Map<String, WornCosmetic> loadout) {
         if (loadout == null || loadout.isEmpty()) {
             return HiddenParts.NONE;
         }
         LoadoutService loadouts = LoadoutService.getInstance();
         int mask = HiddenParts.NONE;
-        for (String cosmeticId : loadout.values()) {
-            CosmeticDefinition definition = loadouts.resolve(cosmeticId);
+        for (WornCosmetic worn : loadout.values()) {
+            CosmeticDefinition definition = loadouts.resolve(worn.cosmeticId());
             if (definition != null && CosmeticAssets.get(definition) != null) {
                 mask |= HiddenParts.of(definition.hideParts());
             }

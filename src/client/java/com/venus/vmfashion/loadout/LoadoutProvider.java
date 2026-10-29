@@ -12,7 +12,11 @@ import java.util.concurrent.CompletableFuture;
  * 当前实现：{@link LocalOnlyProvider}（纯本地模式，永远返回空表）和
  * {@code com.venus.vmfashion.net.HttpLoadoutProvider}（VMTools 后端）。
  *
- * <p>返回结构：玩家 UUID → （分类 key → 时装全局 ID）。
+ * <p>返回结构：玩家 UUID → （分类 key → {@link WornCosmetic}）。
+ *
+ * <p><b>v1.0 契约变化</b>：旧实现返回 {@code Map<UUID, Map<String, String>>}（slot → cosmeticId），
+ * 后端存的 {@code scale} 在数据层就被丢掉了。现在每个槽位带一个不可变的
+ * {@link WornCosmetic}（ID + scale），渲染层才能把"后端 scale"乘进最终缩放。
  */
 public interface LoadoutProvider {
 
@@ -25,5 +29,5 @@ public interface LoadoutProvider {
      * @param uuids 需要查询的玩家，非空
      * @return 只包含"查到了"的玩家的映射；缺失的玩家视为没有穿戴
      */
-    CompletableFuture<Map<UUID, Map<String, String>>> resolve(Collection<UUID> uuids);
+    CompletableFuture<Map<UUID, Map<String, WornCosmetic>>> resolve(Collection<UUID> uuids);
 }

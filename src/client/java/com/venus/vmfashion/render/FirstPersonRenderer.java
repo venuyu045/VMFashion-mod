@@ -3,6 +3,7 @@ package com.venus.vmfashion.render;
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.venus.vmfashion.cosmetic.CosmeticDefinition;
 import com.venus.vmfashion.loadout.LoadoutService;
+import com.venus.vmfashion.loadout.WornCosmetic;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.player.PlayerModel;
@@ -112,12 +113,17 @@ public final class FirstPersonRenderer {
         part.zRot = arm == HumanoidArm.RIGHT ? ARM_Z_ROT : -ARM_Z_ROT;
 
         String bone = arm == HumanoidArm.RIGHT ? "right_arm" : "left_arm";
-        Map<String, String> loadout = RenderCache.loadout(uuid);
+        Map<String, WornCosmetic> loadout = RenderCache.loadout(uuid);
         if (!loadout.isEmpty()) {
             LoadoutService loadouts = LoadoutService.getInstance();
             float globalScale = CosmeticRenderDispatcher.globalScale();
-            for (String cosmeticId : loadout.values()) {
-                CosmeticDefinition definition = loadouts.resolve(cosmeticId);
+            for (WornCosmetic worn : loadout.values()) {
+                // 防御式：穿戴表来自磁盘 / 后端，理论上不该有 null 值，但一条脏数据
+                // 不能把渲染线程搞崩（这里每帧每只手都会跑）
+                if (worn == null) {
+                    continue;
+                }
+                CosmeticDefinition definition = loadouts.resolve(worn.cosmeticId());
                 if (definition == null || !isArmBone(definition.attachedBone(), bone)) {
                     continue;
                 }
@@ -126,7 +132,7 @@ public final class FirstPersonRenderer {
                     continue;
                 }
                 CosmeticRenderDispatcher.submitOne(poseStack, collector, packedLight, uuid,
-                        definition, entry, model, globalScale);
+                        definition, entry, worn.scale(), model, globalScale);
             }
         }
         // hideParts：命中这只手就把原版手臂整个跳过（时装已经提交完了）。
