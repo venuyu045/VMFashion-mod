@@ -41,6 +41,14 @@ jobs:
         env:
           VMF_OFFLINE_FLAG: ''
 
+      # 语言文件 key 集合必须一致，否则英文玩家会看到原始 key
+      - name: Check language files
+        run: bash tools/dev/check-lang.sh
+
+      # 发布产物结构：图标 / 语言 / 示例包 / 版本占位符展开 / 入口类
+      - name: Check jar structure
+        run: bash tools/dev/check-jar.sh
+
       - name: Upload jars
         uses: actions/upload-artifact@v4
         with:
