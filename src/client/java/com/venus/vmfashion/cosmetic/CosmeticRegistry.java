@@ -44,6 +44,10 @@ public final class CosmeticRegistry {
     /**
      * 按 ID 查找时装。
      *
+     * <p>匹配规则：先找 {@code packId:localId} 全名（大小写不敏感），命中就返回；
+     * 没有再找不带包名的 {@code localId}，且<b>只有唯一匹配</b>才返回 —— 同名时装分布在多个包时返回
+     * {@code null}，避免"猜错了给玩家穿错东西"。
+     *
      * @param id 形如 {@code packId:localId}，也接受不带包名的 {@code localId}（唯一时）
      */
     public CosmeticDefinition find(String id) {
@@ -51,22 +55,21 @@ public final class CosmeticRegistry {
             return null;
         }
         String needle = id.trim();
-        CosmeticDefinition fallback = null;
+        CosmeticDefinition shortMatch = null;
+        int shortMatches = 0;
         for (CosmeticPack pack : packs) {
             for (CosmeticDefinition cosmetic : pack.cosmetics()) {
                 if (cosmetic.id().equalsIgnoreCase(needle)) {
+                    // 全名永远优先：即使前面已经出现过同名短名，也不该判成歧义
                     return cosmetic;
                 }
                 if (cosmetic.localId().equalsIgnoreCase(needle)) {
-                    // 不带包名时只在唯一匹配的情况下采用
-                    if (fallback != null) {
-                        return null;
-                    }
-                    fallback = cosmetic;
+                    shortMatch = cosmetic;
+                    shortMatches++;
                 }
             }
         }
-        return fallback;
+        return shortMatches == 1 ? shortMatch : null;
     }
 
     public List<CosmeticDefinition> byCategory(CosmeticCategory category) {

@@ -9,6 +9,7 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.cosmetic.CosmeticDefinition;
+import com.venus.vmfashion.cosmetic.CosmeticResourceId;
 import com.mojang.blaze3d.platform.NativeImage;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.texture.DynamicTexture;
@@ -20,7 +21,6 @@ import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -49,6 +49,8 @@ public final class CosmeticAssets {
     private static final Map<String, String> FAILURES = new ConcurrentHashMap<>();
     /** 由本模组注册的贴图 ID；reload 时必须主动释放，否则旧图一直占显存且新图不会生效。 */
     private static final java.util.Set<Identifier> REGISTERED_TEXTURES = ConcurrentHashMap.newKeySet();
+    /** 贴图注册/上传串行化：TextureManager 的注册不是线程安全的，且同一 ID 不能重复上传。 */
+    private static final Object TEXTURE_LOCK = new Object();
 
     private CosmeticAssets() {
     }
@@ -148,34 +150,41 @@ public final class CosmeticAssets {
     private static Identifier registerTexture(CosmeticDefinition definition, Path file, String suffix)
             throws Exception {
         Identifier id = resourceId(definition, suffix);
-        TextureManager textureManager = Minecraft.getInstance().getTextureManager();
-        if (textureManager.getTexture(id) != null) {
+        synchronized (TEXTURE_LOCK) {
+            // 只复用"本次加载里由本模组注册过"的贴图。
+            // 旧实现用 getTexture(id) != null 判重 —— 那是别人的图（资源包 / 撞车后的另一件时装）也照单全收，
+            // 结果 A 穿上 B 的贴图。现在 ID 里带来源哈希，撞车不可能发生，
+            // 这个判断仅用于避免同一件时装被并发烘焙时重复上传。
+            if (REGISTERED_TEXTURES.contains(id)) {
+                return id;
+            }
+            NativeImage image;
+            try (InputStream stream = Files.newInputStream(file)) {
+                image = NativeImage.read(stream);
+            }
+            TextureManager textureManager = Minecraft.getInstance().getTextureManager();
+            if (textureManager.getTexture(id) != null) {
+                // 上一次加载留下的同名贴图（例如 invalidate 时没拿到 TextureManager），先释放避免显存泄漏
+                textureManager.release(id);
+            }
+            // DynamicTexture 接管 image 的所有权，并在构造时上传到 GPU
+            textureManager.register(id, new DynamicTexture(
+                    () -> "vmfashion/" + definition.id() + "/" + suffix, image));
             REGISTERED_TEXTURES.add(id);
             return id;
         }
-        NativeImage image;
-        try (InputStream stream = Files.newInputStream(file)) {
-            image = NativeImage.read(stream);
-        }
-        // DynamicTexture 接管 image 的所有权，并在构造时上传到 GPU
-        textureManager.register(id, new DynamicTexture(() -> "vmfashion/" + definition.id() + "/" + suffix, image));
-        REGISTERED_TEXTURES.add(id);
-        return id;
     }
 
     /**
      * 把时装 ID 映射成合法的 {@link Identifier}（只允许 a-z0-9/._-）。
+     *
+     * <p>路径由 {@link CosmeticResourceId#pathFor} 生成：可读部分 + 来源哈希。
+     * 只做字符替换会撞车（{@code A:B} 与 {@code A_B} 都会被压成 {@code a_b}，见路线图 #13），
+     * 哈希算的是原始 ID，因此不同来源一定拿到不同 Identifier。
      */
     private static Identifier resourceId(CosmeticDefinition definition, String suffix) {
-        String raw = (definition.packId() + "/" + definition.localId() + "/" + suffix).toLowerCase(Locale.ROOT);
-        StringBuilder path = new StringBuilder(raw.length());
-        for (int i = 0; i < raw.length(); i++) {
-            char c = raw.charAt(i);
-            boolean allowed = (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')
-                    || c == '/' || c == '.' || c == '_' || c == '-';
-            path.append(allowed ? c : '_');
-        }
-        return Identifier.fromNamespaceAndPath(NAMESPACE, path.toString());
+        String path = CosmeticResourceId.pathFor(definition.packId(), definition.localId(), suffix);
+        return Identifier.fromNamespaceAndPath(NAMESPACE, path);
     }
 
     /**

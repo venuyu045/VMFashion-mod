@@ -29,14 +29,24 @@ public final class LocalLoadout {
 
     public synchronized void wear(CosmeticDefinition cosmetic) {
         worn.put(cosmetic.category().key(), cosmetic.id());
+        // 纯本地模式下没有云端兜底，改完立刻请求落盘（LoadoutStore 内部 debounce，连续换装只写一次）
+        LoadoutStore.requestSave();
     }
 
     public synchronized String unwear(String categoryKey) {
-        return worn.remove(categoryKey);
+        String removed = worn.remove(categoryKey);
+        if (removed != null) {
+            LoadoutStore.requestSave();
+        }
+        return removed;
     }
 
     public synchronized void clear() {
+        boolean changed = !worn.isEmpty();
         worn.clear();
+        if (changed) {
+            LoadoutStore.requestSave();
+        }
     }
 
     /**
@@ -46,14 +56,15 @@ public final class LocalLoadout {
      */
     public synchronized void replaceAll(Map<String, String> loadout) {
         worn.clear();
-        if (loadout == null) {
-            return;
+        if (loadout != null) {
+            loadout.forEach((slot, id) -> {
+                if (slot != null && !slot.isBlank() && id != null && !id.isBlank()) {
+                    worn.put(slot.toLowerCase(java.util.Locale.ROOT), id);
+                }
+            });
         }
-        loadout.forEach((slot, id) -> {
-            if (slot != null && !slot.isBlank() && id != null && !id.isBlank()) {
-                worn.put(slot.toLowerCase(java.util.Locale.ROOT), id);
-            }
-        });
+        // 云端拉回 / 本地文件恢复的穿戴同样要落盘：断网、后端挂了时这就是唯一副本
+        LoadoutStore.requestSave();
     }
 
     /** 当前穿戴的快照（分类 → 时装 ID）。 */
