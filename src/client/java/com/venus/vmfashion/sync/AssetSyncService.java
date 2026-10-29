@@ -150,8 +150,16 @@ public final class AssetSyncService {
     private volatile boolean catalogUnsupported;
     private volatile long lastCatalogAttemptAt;
     private volatile long lastLruTouchAt;
-    /** 已安装包的总字节数（内存维护，{@link #cacheBytes()} 不 stat 磁盘）。 */
-    private volatile long cachedBytes;
+    /**
+     * 已安装包的总字节数（内存维护，{@link #cacheBytes()} 不 stat 磁盘）。
+     *
+     * <p>用 {@link java.util.concurrent.atomic.AtomicLong} 而不是 {@code volatile long}：
+     * 安装完成（worker 线程，最多 2 个并发）与 LRU 淘汰（另一个 worker）都会做
+     * {@code += / -=} 这种读-改-写，plain volatile 会丢更新，导致缓存大小统计偏小、
+     * 淘汰不及时（缓存可能长期超过上限）。
+     */
+    private final java.util.concurrent.atomic.AtomicLong cachedBytes =
+            new java.util.concurrent.atomic.AtomicLong();
     /** 代次：离服 / 清缓存时 +1，在飞下载的结果据此作废。 */
     private volatile long epoch;
 
@@ -337,7 +345,7 @@ public final class AssetSyncService {
             }
         }
         installed.clear();
-        cachedBytes = 0L;
+        cachedBytes.set(0L);
         // 包没了，注册表里还留着它们：让主线程下一 tick 重载
         reloadPending.set(true);
         VMFashionClient.LOGGER.info("已清理服务端时装包缓存：{} 个目录", removed);
@@ -369,7 +377,7 @@ public final class AssetSyncService {
             return Component.translatable("vmfashion.asset.status.unsupported");
         }
         MutableComponent status = Component.translatable("vmfashion.asset.status.active",
-                installed.size(), humanBytes(cachedBytes));
+                installed.size(), humanBytes(cachedBytes.get()));
         int pending = pendingCount();
         if (pending > 0) {
             status.append(Component.translatable("vmfashion.asset.status.queue", pending));
@@ -383,7 +391,7 @@ public final class AssetSyncService {
 
     /** 已缓存的服务端包占用字节数，给诊断用（内存值，不做磁盘遍历）。 */
     public long cacheBytes() {
-        return cachedBytes;
+        return cachedBytes.get();
     }
 
     /** 在飞 + 排队中的下载数。 */
@@ -514,7 +522,7 @@ public final class AssetSyncService {
             long bytes = extraction.totalBytes();
             writeMarker(target, info, download.sha256(), bytes, now);
             installed.put(key, new InstalledPack(info.id(), info.version(), download.sha256(), bytes, now, now));
-            cachedBytes += bytes;
+            cachedBytes.addAndGet(bytes);
             recentlyUsed.add(key);
             failedUntil.remove(key);
             catalogMisses.remove(key);
@@ -637,7 +645,7 @@ public final class AssetSyncService {
                 VMFashionClient.LOGGER.debug("扫描服务端时装包失败: {}", e.toString());
             }
         }
-        cachedBytes = total;
+        cachedBytes.set(total);
     }
 
     /** 读包目录里的 {@code pack.json}，返回 {@code id}（缺失时回退目录名，与 PackLoader 一致）。 */
@@ -765,7 +773,7 @@ public final class AssetSyncService {
             return; // 0 = 不限制
         }
         long budget = budgetMb * 1024L * 1024L;
-        if (cachedBytes <= budget) {
+        if (cachedBytes.get() <= budget) {
             return;
         }
         if (!evicting.compareAndSet(false, true)) {
@@ -776,12 +784,12 @@ public final class AssetSyncService {
                 List<InstalledPack> candidates = new ArrayList<>(installed.values());
                 candidates.sort(Comparator.comparingLong(InstalledPack::lastUsedAt));
                 for (InstalledPack pack : candidates) {
-                    if (cachedBytes <= budget) {
+                    if (cachedBytes.get() <= budget) {
                         break;
                     }
                     if (deleteRecursively(PackLoader.serverPacksDir().resolve(pack.packId()))) {
                         installed.remove(pack.packId().toLowerCase(Locale.ROOT));
-                        cachedBytes -= pack.bytes();
+                        cachedBytes.addAndGet(-pack.bytes());
                         reloadPending.set(true);
                         VMFashionClient.LOGGER.info("缓存超过 {}MB，淘汰最久未用的包 {}",
                                 budgetMb, pack.packId());
