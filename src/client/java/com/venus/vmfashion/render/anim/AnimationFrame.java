@@ -32,8 +32,14 @@ public final class AnimationFrame {
     private final float[] scratch = new float[3];
 
     private long lastUsedNanos = startNanos;
-    /** 上次求值的时间点；同一帧里主层 + emissive 层会各调一次 {@link #update()}，第二次直接复用。 */
-    private long lastUpdateNanos = Long.MIN_VALUE;
+    /**
+     * 上次求值的时间点；同一帧里主层 + emissive 层会各调一次 {@link #update()}，第二次直接复用。
+     *
+     * <p>初值用 {@code 0} 当哨兵（{@code System.nanoTime()} 不保证从 0 开始，但绝不会是 0
+     * —— 它是任意原点起的单调时钟）。<b>不能用 {@code Long.MIN_VALUE} 当初值</b>：
+     * {@code now - Long.MIN_VALUE} 会溢出成负数，导致"永远小于阈值"、动画一次都不采样。
+     */
+    private long lastUpdateNanos = 0L;
 
     private AnimationFrame(BakedGeoModel model, BedrockAnimation animation) {
         this.animation = animation;
@@ -84,7 +90,8 @@ public final class AnimationFrame {
         long now = System.nanoTime();
         // 同一帧里主层和 emissive 层会各调一次；两次间隔通常在微秒级，
         // 复用第一次的采样结果：既省一遍全部骨骼采样，也让两层用**同一组**值（更正确）。
-        if (now - lastUpdateNanos < 1_000_000L) {
+        // lastUpdateNanos == 0 表示"还没求过值"，必须走到下面的采样（否则初值会踩溢出坑）
+        if (shouldReuseSample(now, lastUpdateNanos)) {
             lastUsedNanos = now;
             return;
         }
@@ -122,6 +129,33 @@ public final class AnimationFrame {
         }
         lastUsedNanos = System.nanoTime();
     }
+
+    /**
+     * 采样结果是否可以复用（同一帧里主层 + emissive 层会各调一次 {@link #update()}）。
+     *
+     * <p>抽成静态方法是为了能单测：这里踩过一个很隐蔽的坑 ——
+     * 初值如果用 {@code Long.MIN_VALUE}，{@code now - lastUpdateNanos} 会溢出成负数，
+     * 于是"间隔 < 1ms"永远成立，动画一次都不会被采样。所以：
+     * <ul>
+     *   <li>{@code lastUpdateNanos == 0} 视为"从未求值"，必须采样；</li>
+     *   <li>其余情况只在间隔小于 {@value #SAMPLE_REUSE_WINDOW_NANOS}ns 时复用。</li>
+     * </ul>
+     *
+     * @param now             当前 {@link System#nanoTime()}
+     * @param lastUpdateNanos 上次求值的时间点（0 = 从未求值）
+     */
+    static boolean shouldReuseSample(long now, long lastUpdateNanos) {
+        if (lastUpdateNanos == 0L) {
+            return false; // 从未求值
+        }
+        long delta = now - lastUpdateNanos;
+        // delta >= 0 这一步是防溢出的：nanoTime 单调递增，正常情况 delta 一定 >= 0；
+        // 一旦算出来是负数（时钟异常 / 极端输入），宁可重新采样也不要错误复用。
+        return delta >= 0L && delta < SAMPLE_REUSE_WINDOW_NANOS;
+    }
+
+    /** 同一帧内复用的时间窗口（纳秒）。取 1ms：远大于两层提交的间隔，远小于任何真实帧间隔。 */
+    static final long SAMPLE_REUSE_WINDOW_NANOS = 1_000_000L;
 
     /** 多久没被渲染过了（毫秒），用于淘汰离场玩家的动画状态。 */
     public long idleMillis() {
