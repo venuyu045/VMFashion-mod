@@ -82,6 +82,20 @@ public final class FashionAuth {
         return api;
     }
 
+    /**
+     * 释放本类自己的 {@link HttpClient}（会话服务器 join 用）。
+     *
+     * <p>和 {@link FashionApi#close()} 同理：配置热更新会重建同步层，旧实例不关就会
+     * 每次重载泄漏一套线程。{@code shutdownNow} 不等待在飞请求，避免卡主线程。
+     */
+    public void close() {
+        try {
+            http.shutdownNow();
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.debug("关闭时装认证 HttpClient 失败（忽略）: {}", t.toString());
+        }
+    }
+
     public Session session() {
         return session;
     }

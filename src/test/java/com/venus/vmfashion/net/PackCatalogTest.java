@@ -279,4 +279,81 @@ class PackCatalogTest {
         assertEquals("c2lnbmF0dXJl", info.signature());
         assertEquals("vmtools-official", info.signingKeyId());
     }
+
+    // ==================== 与后端实际响应形状的交叉核对 ====================
+
+    @Test
+    void acceptsItemsEnvelopeAsFallback() {
+        // 后端其它列表接口（/catalog、/identities/me、/admin/assets）统一用 {"items":[...]}，
+        // 实现 /packs 时很容易照抄这个形状。只认 "packs" 的话后端一上线客户端就是"清单 0 个包"，
+        // 而且日志里看不出原因。
+        String json = """
+                {"items":[{"id":"wings","version":"1.2.0","sha256":"%s","bytes":10}]}
+                """.formatted(VALID_SHA);
+
+        Map<String, PackCatalog.PackInfo> packs = PackCatalog.parse(json);
+
+        assertEquals(1, packs.size(), "items 包一层的响应也要能解析");
+        assertNotNull(packs.get("wings"));
+    }
+
+    @Test
+    void packsEnvelopeWinsOverItemsEnvelope() {
+        // 两种形状同时出现时以契约字段 packs 为准（不能因为 items 恰好存在就换口径）
+        String json = """
+                {"packs":[{"id":"from-packs","version":"1.0.0","sha256":"%s","bytes":1}],
+                 "items":[{"id":"from-items","version":"1.0.0","sha256":"%s","bytes":1}]}
+                """.formatted(VALID_SHA, OTHER_SHA);
+
+        Map<String, PackCatalog.PackInfo> packs = PackCatalog.parse(json);
+
+        assertEquals(1, packs.size());
+        assertNotNull(packs.get("from-packs"));
+        assertNull(packs.get("from-items"));
+    }
+
+    @Test
+    void parsesPublishedAtAsMillisecondsIsoStringAndNumericString() {
+        // 契约写的是"毫秒 number"，但站点 docs/fashion-api.md 的全局约定是"时间用 ISO-8601 字符串"，
+        // 实现 /packs 时两种都可能出现；认不出来只影响展示，绝不能因此丢条目。
+        String json = """
+                {"packs":[
+                  {"id":"millis","version":"1.0.0","sha256":"%s","bytes":1,"publishedAt":1735603200000},
+                  {"id":"iso-z","version":"1.0.0","sha256":"%s","bytes":1,"publishedAt":"2025-01-01T00:00:00Z"},
+                  {"id":"iso-offset","version":"1.0.0","sha256":"%s","bytes":1,
+                   "publishedAt":"2025-01-01T08:00:00+08:00"},
+                  {"id":"iso-local","version":"1.0.0","sha256":"%s","bytes":1,
+                   "publishedAt":"2025-01-01T00:00:00"},
+                  {"id":"numeric-string","version":"1.0.0","sha256":"%s","bytes":1,
+                   "publishedAt":"1735603200000"},
+                  {"id":"garbage","version":"1.0.0","sha256":"%s","bytes":1,"publishedAt":"yesterday"},
+                  {"id":"null-ts","version":"1.0.0","sha256":"%s","bytes":1,"publishedAt":null}
+                ]}
+                """.formatted(VALID_SHA, VALID_SHA, VALID_SHA, VALID_SHA, VALID_SHA, VALID_SHA, VALID_SHA);
+
+        Map<String, PackCatalog.PackInfo> packs = PackCatalog.parse(json);
+
+        assertEquals(7, packs.size(), "时间字段异常不能让条目被丢弃");
+        assertEquals(1735603200000L, packs.get("millis").publishedAt());
+        // 2025-01-01T00:00:00Z == 1735689600000
+        assertEquals(1735689600000L, packs.get("iso-z").publishedAt());
+        assertEquals(1735689600000L, packs.get("iso-offset").publishedAt());
+        assertEquals(1735689600000L, packs.get("iso-local").publishedAt(), "无时区按 UTC 解释");
+        assertEquals(1735603200000L, packs.get("numeric-string").publishedAt());
+        assertEquals(0L, packs.get("garbage").publishedAt(), "认不出来回退 0");
+        assertEquals(0L, packs.get("null-ts").publishedAt());
+    }
+
+    @Test
+    void parseTimestampMillisHandlesAllShapesDirectly() {
+        assertEquals(123L, PackCatalog.parseTimestampMillis(
+                com.google.gson.JsonParser.parseString("123"), -1L));
+        assertEquals(123L, PackCatalog.parseTimestampMillis(
+                com.google.gson.JsonParser.parseString("\"123\""), -1L));
+        assertEquals(-1L, PackCatalog.parseTimestampMillis(null, -1L));
+        assertEquals(-1L, PackCatalog.parseTimestampMillis(
+                com.google.gson.JsonParser.parseString("{}"), -1L));
+        assertEquals(-1L, PackCatalog.parseTimestampMillis(
+                com.google.gson.JsonParser.parseString("\"\""), -1L));
+    }
 }

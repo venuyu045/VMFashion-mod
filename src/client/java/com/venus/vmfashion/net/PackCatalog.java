@@ -283,7 +283,10 @@ public final class PackCatalog {
     /**
      * 解析 {@code /packs} 响应体。
      *
-     * <p>接受两种形状：{@code {"packs":[…]}} 与直接给数组 {@code […]}（后端同学容易写成后者）。
+     * <p>接受三种形状：{@code {"packs":[…]}}（契约）、直接给数组 {@code […]}（后端同学容易写成后者），
+     * 以及 {@code {"items":[…]}} —— 后端其它列表接口（{@code /catalog} / {@code /identities/me} /
+     * {@code /admin/assets}）全部用 {@code items} 包一层，实现 {@code /packs} 时很容易照着写；
+     * 不兼容的话后端一上线客户端就是"清单 0 个包"，而且日志里看不出原因。
      *
      * @param json 响应体原文
      * @return 小写 packId → 清单项；任何解析失败都返回空 map，绝不抛异常
@@ -296,7 +299,14 @@ public final class PackCatalog {
             JsonElement root = JsonParser.parseString(json);
             JsonElement arrayElement = root;
             if (root.isJsonObject()) {
-                arrayElement = root.getAsJsonObject().get("packs");
+                JsonObject object = root.getAsJsonObject();
+                arrayElement = object.get("packs");
+                if (arrayElement == null || !arrayElement.isJsonArray()) {
+                    JsonElement items = object.get("items");
+                    if (items != null && items.isJsonArray()) {
+                        arrayElement = items;
+                    }
+                }
             }
             return parsePacks(arrayElement);
         } catch (Exception e) {
@@ -352,7 +362,10 @@ public final class PackCatalog {
         if (url.isBlank()) {
             url = PACKS_PATH + "/" + encodePathSegment(id) + "/" + encodePathSegment(version) + "/download";
         }
-        long publishedAt = optLong(object, "publishedAt", 0L);
+        // publishedAt 只用于展示 / 排查，单位契约是"毫秒 number"，但后端其它接口统一用
+        // ISO-8601 字符串（见站点 docs/fashion-api.md「时间：ISO-8601 字符串（UTC）」），
+        // 实现 /packs 时很可能照那个惯例写。两种都认，认不出来就当 0（不影响下载判定）。
+        long publishedAt = parseTimestampMillis(object.get("publishedAt"), 0L);
         // 签名是可选字段：老后端没有 → 空串，由 PackSignature 的策略决定"放行 + warn"还是"严格模式拒绝"
         String signature = optString(object, "signature");
         String signingKeyId = optString(object, "signingKeyId");
@@ -443,6 +456,51 @@ public final class PackCatalog {
                 return fallback;
             }
             return element.getAsLong();
+        } catch (Exception e) {
+            return fallback;
+        }
+    }
+
+    /**
+     * 解析时间戳：同时接受"毫秒 number"（契约）与 ISO-8601 字符串（后端其它接口的惯例）。
+     *
+     * <p>三种写法都能认：
+     * <ul>
+     *   <li>{@code 1735603200000}（number，毫秒）；</li>
+     *   <li>{@code "1735603200000"}（数字字符串，有些序列化库会这么写）；</li>
+     *   <li>{@code "2025-01-01T00:00:00Z"} / {@code "…+00:00"} / {@code "…T00:00:00"}（按 UTC 解释）。</li>
+     * </ul>
+     * 认不出来就返回 {@code fallback}：这个字段只用于展示，绝不能因为它让整条清单项被丢弃。
+     */
+    static long parseTimestampMillis(JsonElement element, long fallback) {
+        if (element == null || element.isJsonNull() || !element.isJsonPrimitive()) {
+            return fallback;
+        }
+        try {
+            if (element.getAsJsonPrimitive().isNumber()) {
+                return element.getAsLong();
+            }
+            String text = element.getAsString() == null ? "" : element.getAsString().trim();
+            if (text.isEmpty()) {
+                return fallback;
+            }
+            try {
+                return Long.parseLong(text);
+            } catch (NumberFormatException ignored) {
+                // 不是数字：按 ISO-8601 继续尝试
+            }
+            try {
+                return java.time.Instant.parse(text).toEpochMilli();
+            } catch (java.time.format.DateTimeParseException ignored) {
+                // 带偏移量（+08:00）的写法 Instant 不认
+            }
+            try {
+                return java.time.OffsetDateTime.parse(text).toInstant().toEpochMilli();
+            } catch (java.time.format.DateTimeParseException ignored) {
+                // 不带时区的写法按 UTC 解释（后端文档约定 UTC）
+            }
+            return java.time.LocalDateTime.parse(text)
+                    .toInstant(java.time.ZoneOffset.UTC).toEpochMilli();
         } catch (Exception e) {
             return fallback;
         }

@@ -44,6 +44,14 @@ public final class SyncService {
     private static final long PROFILE_RECHECK_MS = 30_000L;
     /** 401 重认证的冷却窗口：一批查询被切成多块时，避免每块都触发一次认证。 */
     private static final long REAUTH_COOLDOWN_MS = 5_000L;
+    /**
+     * "本地时钟判定会话已过期 → 主动补一次认证"的冷却窗口。
+     *
+     * <p>为什么需要冷却：后端如果返回了极短的 {@code expiresIn}（小于 {@link FashionAuth.Session#expired()}
+     * 的 60 秒安全边界），认证成功后的回调会再次发现"已过期"并再认证一次 —— 没有冷却就是
+     * 每分钟几十次 challenge/join/verify 的认证风暴。60 秒一次把最坏情况压到可接受范围。
+     */
+    private static final long EXPIRY_REAUTH_COOLDOWN_MS = 60_000L;
     /** 同一条错误提示的聊天栏去重窗口，避免刷屏。 */
     private static final long CHAT_DEDUPE_MS = 15_000L;
 
@@ -63,6 +71,8 @@ public final class SyncService {
     private volatile long lastProfileCheckAtMs;
     /** 上一次触发 401 重认证的时间戳。 */
     private volatile long lastReauthAtMs;
+    /** 上一次因"本地时钟判定会话已过期"而补认证的时间戳（见 {@link #EXPIRY_REAUTH_COOLDOWN_MS}）。 */
+    private volatile long lastExpiryReauthAtMs;
     /** 最近一条错误提示（聊天栏去重用）。 */
     private volatile String lastChatMessage = "";
     private volatile long lastChatAtMs;
@@ -80,9 +90,7 @@ public final class SyncService {
     public void initialize(ModConfig config) {
         if (config == null || !config.canSync()) {
             enabled = false;
-            api = null;
-            auth = null;
-            provider = null;
+            releaseSyncStack();
             LoadoutService.getInstance().setProvider(null);
             // 只有"根本没配后端地址"的纯本地模式才允许回退到本地穿戴（单机预览渲染链路）。
             // 配了后端但把同步关掉时绝不能回退：回退会把"自己的"穿戴渲染到所有玩家身上，
@@ -91,6 +99,9 @@ public final class SyncService {
             return;
         }
 
+        // 旧同步层（及其 HttpClient）必须先释放：本方法会被 /vmfashion config reload 反复调用，
+        // 不释放的话每次重载都会泄漏两套 HttpClient 的选择器线程 + 线程池。
+        releaseSyncStack();
         FashionApi newApi = new FashionApi(config.getApiBaseUrl());
         FashionAuth newAuth = new FashionAuth(newApi);
         HttpLoadoutProvider newProvider = new HttpLoadoutProvider(newApi);
@@ -104,6 +115,7 @@ public final class SyncService {
         provider = newProvider;
         enabled = true;
         lastReauthAtMs = 0L;
+        lastExpiryReauthAtMs = 0L;
         lastRefreshAtMs = 0L;
         lastProfileCheckAtMs = 0L;
 
@@ -115,6 +127,39 @@ public final class SyncService {
         LoadoutService.getInstance().setFallbackToLocal(false);
 
         VMFashionClient.LOGGER.info("时装同步已启用：{}", config.getApiBaseUrl());
+    }
+
+    /**
+     * 释放当前同步层（{@link FashionApi} / {@link FashionAuth}）并清空引用。
+     *
+     * <p>为什么必须有：{@code HttpClient} 一旦使用就持有选择器线程与线程池，
+     * 而 {@link #initialize(ModConfig)} 会被 {@code /vmfashion config reload} 反复调用
+     * （玩家改 {@code apiBaseUrl} 的官方路径）。不释放的话每次重载泄漏两套，
+     * 反复重载几次就会多出一堆永不退出的线程。
+     *
+     * <p>只关闭 HTTP 层、不动 {@link LoadoutService} 的 provider —— 由调用方决定换成
+     * 新 provider 还是回退到 {@code LocalOnlyProvider}。
+     */
+    private void releaseSyncStack() {
+        FashionAuth previousAuth = auth;
+        FashionApi previousApi = api;
+        auth = null;
+        api = null;
+        provider = null;
+        if (previousAuth != null) {
+            try {
+                previousAuth.close();
+            } catch (Throwable t) {
+                VMFashionClient.LOGGER.debug("释放时装认证层失败（忽略）: {}", t.toString());
+            }
+        }
+        if (previousApi != null) {
+            try {
+                previousApi.close();
+            } catch (Throwable t) {
+                VMFashionClient.LOGGER.debug("释放时装 API 层失败（忽略）: {}", t.toString());
+            }
+        }
     }
 
     public boolean isEnabled() {
@@ -359,7 +404,11 @@ public final class SyncService {
                     : Component.translatable("vmfashion.error.no_token");
             case "rate_limited", "too_many_requests", "http_429" ->
                     Component.translatable("vmfashion.error.rate_limited");
-            case "invalid_request", "bad_request", "http_400" ->
+            case "invalid_request", "bad_request", "http_400", "http_422",
+                 // 后端的参数级错误码（正常客户端不会触发，触发了说明客户端有 bug）：
+                 // 映射到同一条提示，至少让玩家/排查者看到"后端拒绝了这次请求"而不是静默
+                 "invalid_slot", "duplicate_slot", "too_many_uuids", "invalid_scale",
+                 "invalid_cosmetic_id" ->
                     Component.translatable("vmfashion.error.bad_request", detail);
             case "forbidden", "http_403" -> Component.translatable("vmfashion.error.forbidden", detail);
             // —— 认证链路（FashionAuth）——
@@ -369,6 +418,18 @@ public final class SyncService {
             case "bad_verify" -> Component.translatable("vmfashion.error.bad_verify");
             case "bad_session_url" -> Component.translatable("vmfashion.error.bad_session_url");
             case "join_failed" -> Component.translatable("vmfashion.error.join_failed", apiException.status());
+            // 后端 hasJoined 判定：一次性 serverId 过期 / 已被消费
+            case "challenge_expired", "challenge_not_found" ->
+                    Component.translatable("vmfashion.error.challenge_expired");
+            // 声明与 challenge 不一致，或 hasJoined 返回的 UUID 与声明不符（安全校验）
+            case "challenge_mismatch", "source_mismatch", "uuid_mismatch" ->
+                    Component.translatable("vmfashion.error.auth_mismatch");
+            // 上游认证服务（Mojang / 皮肤站）故障：可重试
+            case "upstream_unavailable" ->
+                    Component.translatable("vmfashion.error.upstream_unavailable");
+            // 后端没配 JWT 密钥等部署问题：玩家自己解决不了，只能提示联系管理员
+            case "server_misconfigured" ->
+                    Component.translatable("vmfashion.error.server_misconfigured");
             // —— 请求层（FashionApi / PackCatalog）——
             case "no_base_url" -> Component.translatable("vmfashion.error.no_base_url");
             case "bad_base_url" -> Component.translatable("vmfashion.error.bad_base_url", detail);
@@ -619,6 +680,13 @@ public final class SyncService {
         }
         FashionAuth.Session session = currentAuth.session();
         if (session == null || session.expired()) {
+            // 旧实现直接 return：本地时钟判定过期后，"云端 → 本地"这条链路就永久静默失效
+            // （玩家换装后再也拉不到网站衣柜的设置，也没有任何提示）。
+            // 这里补一次认证，认证成功后的回调会重新走 refreshFromRemote。
+            if (expiryReauthDue(System.currentTimeMillis())) {
+                VMFashionClient.LOGGER.info("时装会话已过期，先重新认证再拉取云端穿戴");
+                authenticateAsync(false);
+            }
             return;
         }
         Map<String, String> localBefore = LocalLoadout.getInstance().snapshot();
@@ -676,6 +744,10 @@ public final class SyncService {
 
     /**
      * 把本地穿戴上报到后端（全量覆盖）。失败只记日志。
+     *
+     * <p>token 过期（默认 24h）时旧实现直接 return：玩家在游戏里换装永远不会上报，
+     * 也没有任何提示，看起来就是"换装不生效"。现在先补一次认证，成功后把<b>当前</b>
+     * 快照补报一次（用当前快照而不是调用时的快照，避免认证期间又换装导致报旧值）。
      */
     public void uploadLocalLoadout() {
         HttpLoadoutProvider currentProvider = provider;
@@ -685,8 +757,63 @@ public final class SyncService {
         }
         FashionAuth.Session session = currentAuth.session();
         if (session == null || session.expired()) {
+            if (expiryReauthDue(System.currentTimeMillis())) {
+                VMFashionClient.LOGGER.info("时装会话已过期，先重新认证再上报穿戴");
+                reauthenticateThenUpload(currentAuth);
+            }
             return;
         }
+        uploadSnapshot(currentProvider, currentAuth);
+    }
+
+    /**
+     * "会话已过期 → 补一次认证"的闸门（带冷却）。
+     *
+     * <p>冷却的意义见 {@link #EXPIRY_REAUTH_COOLDOWN_MS}：没有它，后端给一个极短的
+     * {@code expiresIn} 就会让"认证成功 → 回调发现已过期 → 再认证"形成风暴。
+     *
+     * @return {@code true} = 本次允许触发（调用方应发起认证并直接返回）
+     */
+    private boolean expiryReauthDue(long now) {
+        if (now - lastExpiryReauthAtMs < EXPIRY_REAUTH_COOLDOWN_MS) {
+            return false;
+        }
+        lastExpiryReauthAtMs = now;
+        return true;
+    }
+
+    /**
+     * 会话过期时：认证成功后再把当前穿戴上报一次。
+     *
+     * <p>{@link FashionAuth#authenticate(String)} 自带"并发调用复用同一个 future"，
+     * 所以这里和 {@link #authenticateAsync(boolean)} 同时触发也只会真的认证一次。
+     */
+    private void reauthenticateThenUpload(FashionAuth currentAuth) {
+        ModConfig config = currentConfig();
+        String authServer = config == null ? "" : config.getAuthServer();
+        CompletableFuture<FashionAuth.Session> future;
+        try {
+            future = currentAuth.authenticate(authServer);
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("上报穿戴前重新认证失败: {}", t.toString());
+            return;
+        }
+        future.whenComplete((session, error) -> {
+            if (error != null || session == null) {
+                VMFashionClient.LOGGER.warn("上报穿戴前重新认证失败: {}",
+                        error == null ? "后端没有返回会话" : error.toString());
+                return;
+            }
+            HttpLoadoutProvider currentProvider = provider;
+            if (currentProvider == null || !enabled) {
+                return;
+            }
+            uploadSnapshot(currentProvider, currentAuth);
+        });
+    }
+
+    /** 真正发一次全量上报；失败按错误码给玩家提示，401 走重新认证。 */
+    private void uploadSnapshot(HttpLoadoutProvider currentProvider, FashionAuth currentAuth) {
         Map<String, String> loadout = LocalLoadout.getInstance().snapshot();
         currentProvider.upload(loadout).whenComplete((ignored, throwable) -> {
             if (throwable != null) {

@@ -56,6 +56,24 @@ public final class FashionApi {
         return baseUrl;
     }
 
+    /**
+     * 释放底层 {@link HttpClient}（配置热更新换后端地址时调用）。
+     *
+     * <p>为什么要显式关：{@code HttpClient} 一旦用过就会持有选择器线程与线程池，
+     * 不关的话每次 {@code /vmfashion config reload} 都会多泄漏一套（JDK 21+ 还会在
+     * 回收时打 "HttpClient was not closed" 的警告）。用 {@code shutdownNow} 而不是
+     * {@code close}：后者会等所有在飞请求结束，在渲染/命令线程上调用可能卡住主线程。
+     *
+     * <p>失败只记 debug：关不掉最多是泄漏一个线程，绝不能让重载流程失败。
+     */
+    public void close() {
+        try {
+            http.shutdownNow();
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.debug("关闭时装后端 HttpClient 失败（忽略）: {}", t.toString());
+        }
+    }
+
     public RetryPolicy retryPolicy() {
         return retryPolicy;
     }
