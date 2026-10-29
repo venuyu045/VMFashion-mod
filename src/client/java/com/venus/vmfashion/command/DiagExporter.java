@@ -7,13 +7,22 @@ import com.venus.vmfashion.config.ModConfig;
 import com.venus.vmfashion.cosmetic.CosmeticDefinition;
 import com.venus.vmfashion.cosmetic.CosmeticPack;
 import com.venus.vmfashion.cosmetic.CosmeticRegistry;
+import com.venus.vmfashion.cosmetic.CosmeticResourceId;
 import com.venus.vmfashion.cosmetic.LocalLoadout;
 import com.venus.vmfashion.cosmetic.LoadoutStore;
 import com.venus.vmfashion.cosmetic.PackLoader;
 import com.venus.vmfashion.render.CosmeticAssets;
+import com.venus.vmfashion.render.EmissiveMask;
+import com.venus.vmfashion.render.FashionRenderState;
+import com.venus.vmfashion.render.anim.AnimationCache;
+import com.venus.vmfashion.render.anim.BedrockAnimation;
 import com.venus.vmfashion.sync.AssetSyncService;
 import com.venus.vmfashion.sync.SyncService;
 import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.entity.state.AvatarRenderState;
+import net.minecraft.client.renderer.texture.TextureManager;
+import net.minecraft.resources.Identifier;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -38,16 +47,15 @@ import java.util.Map;
  * <p>内容（顺序有讲究）：
  * <ol>
  *   <li>环境与配置；</li>
- *   <li>时装包清单 + 每件时装的解析结果；</li>
- *   <li><b>烘焙</b>：对每件时装调一次 {@link CosmeticAssets#get}，失败的那条会把原因
- *       {@code warn} 进日志；</li>
+ *   <li>时装包清单 + 每件时装的解析结果（动画 / 发光层状态）；</li>
+ *   <li><b>渲染缓存</b>：已烘焙资源数、动画实例数、mixin 是否生效；</li>
  *   <li>本地穿戴 / 同步状态 / 资产下发状态；</li>
- *   <li><b>最后</b>读 {@code logs/latest.log} 的尾巴 —— 必须放在烘焙之后，
- *       否则刚产生的失败原因读不到。</li>
+ *   <li>最后读 {@code logs/latest.log} 的尾巴。</li>
  * </ol>
  *
- * <p>本类只做"读 + 写一个文本文件"，不碰 GL 之外的 Minecraft 状态；烘焙必须由调用方
- * 保证在主线程执行（命令本来就跑在主线程）。
+ * <p><b>本类绝不触发新的烘焙</b>：{@link CosmeticAssets#get} 在缓存未命中时会烘焙模型并上传贴图，
+ * 排障工具不能因为跑一次诊断就把几十件时装全烘焙一遍。每件时装只读"已经加载过"的资源
+ * （判定方式见 {@link #cachedEntry}），没加载过的写"未加载"。
  */
 public final class DiagExporter {
 
@@ -60,6 +68,16 @@ public final class DiagExporter {
     private static final int LOG_KEEP_LINES = 150;
     /** 目录大小统计最多走多少个条目（防止有人在 packs 里塞几万个小文件把命令卡住）。 */
     private static final int MAX_WALK_ENTRIES = 20_000;
+    /** {@code CosmeticAssets} 注册主贴图时用的后缀（见它的 registerTexture 调用）。 */
+    private static final String TEXTURE_SUFFIX = "texture";
+    /** 动画那一列最多列几个名字，再多就用"等 N 个"概括（避免一行几百字符）。 */
+    private static final int MAX_ANIMATIONS_LISTED = 3;
+    /** 这件时装没配发光层。 */
+    private static final int EMISSIVE_NONE = -1;
+    /** 发光层存在，但资源还没加载过（diag 不烘焙，读不到）。 */
+    private static final int EMISSIVE_NOT_LOADED = -2;
+    /** 读遮罩时抛异常。 */
+    private static final int EMISSIVE_ERROR = -3;
 
     private DiagExporter() {
     }
@@ -83,6 +101,7 @@ public final class DiagExporter {
         appendConfig(out);
         appendPacks(out);
         appendCosmetics(out);
+        appendRenderCache(out);
         appendLoadout(out);
         appendSync(out);
         appendAssets(out);
@@ -162,35 +181,184 @@ public final class DiagExporter {
     }
 
     private static void appendCosmetics(StringBuilder out) {
-        out.append("==================== 时装清单 / 烘焙结果 ====================\n");
+        out.append("==================== 时装清单 / 资源状态 ====================\n");
         List<CosmeticDefinition> cosmetics = CosmeticRegistry.getInstance().all();
         out.append("总件数: ").append(cosmetics.size()).append('\n');
-        int failures = 0;
+        int loaded = 0;
+        int animated = 0;
+        int emissiveHits = 0;
         for (CosmeticDefinition cosmetic : cosmetics) {
-            // 这里会真正烘焙 + 上传贴图（主线程），失败原因由 CosmeticAssets 写进日志，
-            // 本方法末尾的"日志尾巴"段会把它带出来
-            boolean ok;
-            try {
-                ok = CosmeticAssets.get(cosmetic) != null;
-            } catch (Throwable t) {
-                ok = false;
+            // 只读已经加载过的资源：本方法绝不触发新的烘焙（见类注释）
+            CosmeticAssets.Entry entry = cachedEntry(cosmetic);
+            if (entry != null) {
+                loaded++;
             }
-            if (!ok) {
-                failures++;
+            String animation = describeAnimations(entry);
+            int emissiveQuads = emissiveQuadCount(entry, cosmetic);
+            if (entry != null && entry.hasAnimation()) {
+                animated++;
             }
-            out.append(ok ? "[OK]   " : "[FAIL] ").append(cosmetic.id())
+            if (emissiveQuads > 0) {
+                emissiveHits++;
+            }
+            out.append(entry != null ? "[已加载] " : "[未加载] ").append(cosmetic.id())
                     .append(" 分类=").append(cosmetic.category().key())
                     .append(" 骨骼=").append(cosmetic.attachedBone())
                     .append(" hideParts=").append(cosmetic.hideParts())
                     .append(" scale=").append(cosmetic.scale())
                     .append(" 模型=").append(exists(cosmetic.modelFile()))
                     .append(" 贴图=").append(exists(cosmetic.textureFile()))
+                    .append(" anim=").append(animation)
+                    .append(" emissive=").append(describeEmissive(emissiveQuads))
                     .append('\n');
         }
-        out.append("烘焙失败: ").append(failures).append(" / ").append(cosmetics.size()).append('\n');
-        out.append("资源缓存: ").append(CosmeticAssets.cachedCount())
-                .append(" 件，失败记录: ").append(CosmeticAssets.failureCount()).append('\n');
+        out.append("已加载资源: ").append(loaded).append(" / ").append(cosmetics.size())
+                .append(" 件（未加载过的不做烘焙；烘焙失败原因见末尾日志段的「资源加载失败」）\n");
+        out.append("有动画: ").append(animated).append(" 件 · 发光层命中: ").append(emissiveHits).append(" 件\n");
         out.append('\n');
+    }
+
+    /**
+     * 只取"已经加载过"的资源，绝不触发新的烘焙。
+     *
+     * <p>为什么不直接 {@link CosmeticAssets#get}：缓存未命中时它会烘焙模型 + 上传贴图，
+     * 排障工具不该顺手把几十件时装全烘焙一遍。
+     *
+     * <p>怎么判断"已加载"：{@code CosmeticAssets} 加载一件时装时会把主贴图注册进
+     * {@link TextureManager}，而贴图 ID 由 {@link CosmeticResourceId#pathFor} 确定性生成
+     * （含来源哈希，不会撞车）—— 贴图已注册 ⇔ 资源已缓存。命中后调
+     * {@link CosmeticAssets#get} 只会直接返回缓存，不会烘焙。
+     *
+     * <p>（{@code render/} 不在本轮可改范围，所以用这个只读探针；将来 {@code CosmeticAssets}
+     * 若提供 peek API，换成它更直接。）
+     *
+     * @return 已缓存的资源；没加载过 / 拿不到时返回 {@code null}
+     */
+    private static CosmeticAssets.Entry cachedEntry(CosmeticDefinition definition) {
+        if (definition == null) {
+            return null;
+        }
+        try {
+            TextureManager textures = Minecraft.getInstance().getTextureManager();
+            if (textures == null) {
+                return null;
+            }
+            Identifier textureId = Identifier.fromNamespaceAndPath(VMFashionClient.MOD_ID,
+                    CosmeticResourceId.pathFor(definition.packId(), definition.localId(), TEXTURE_SUFFIX));
+            if (textures.getTexture(textureId) == null) {
+                return null;
+            }
+            return CosmeticAssets.get(definition);
+        } catch (Throwable t) {
+            // 探针失败只影响这一件时装的显示
+            return null;
+        }
+    }
+
+    /** 动画列：{@code 无} / {@code 未加载} / {@code idle(2.0s)，wave(1.5s)}。 */
+    private static String describeAnimations(CosmeticAssets.Entry entry) {
+        if (entry == null) {
+            return "未加载";
+        }
+        Map<String, BedrockAnimation> animations = entry.animations();
+        if (animations == null || animations.isEmpty()) {
+            return "无";
+        }
+        StringBuilder text = new StringBuilder();
+        int shown = 0;
+        for (BedrockAnimation animation : animations.values()) {
+            if (shown >= MAX_ANIMATIONS_LISTED) {
+                break;
+            }
+            if (shown > 0) {
+                text.append("，");
+            }
+            text.append(animation.name() == null ? "?" : animation.name())
+                    .append('(').append(seconds(animation.length())).append(')');
+            shown++;
+        }
+        if (animations.size() > shown) {
+            text.append(" 等 ").append(animations.size()).append(" 个");
+        }
+        return text.toString();
+    }
+
+    /**
+     * 发光层遮罩命中的面数。
+     *
+     * <p>0 面和"没做发光"看起来完全一样，是这次审查点名要暴露的信息。
+     * {@link EmissiveMask#get} 内部有缓存（按时装 ID + 模型），命中时不会重建遮罩。
+     *
+     * @return 命中的面数；{@link #EMISSIVE_NONE} 表示没配发光层，
+     *         {@link #EMISSIVE_NOT_LOADED} 表示资源还没加载过，{@link #EMISSIVE_ERROR} 表示读取失败
+     */
+    private static int emissiveQuadCount(CosmeticAssets.Entry entry, CosmeticDefinition definition) {
+        if (definition.emissiveFile() == null) {
+            return EMISSIVE_NONE;
+        }
+        if (entry == null) {
+            return EMISSIVE_NOT_LOADED;
+        }
+        try {
+            EmissiveMask mask = EmissiveMask.get(entry, definition);
+            return mask == null ? 0 : mask.size();
+        } catch (Throwable t) {
+            return EMISSIVE_ERROR;
+        }
+    }
+
+    /** 把 {@link #emissiveQuadCount} 的结果翻成 diag 里那一列的文字。 */
+    private static String describeEmissive(int quads) {
+        return switch (quads) {
+            case EMISSIVE_NONE -> "无发光层";
+            case EMISSIVE_NOT_LOADED -> "未加载";
+            case EMISSIVE_ERROR -> "读取失败";
+            default -> quads == 0 ? "命中 0 面（整趟跳过）" : "命中 " + quads + " 面";
+        };
+    }
+
+    /** 秒数保留一位小数：{@code 2.0s}。 */
+    private static String seconds(double value) {
+        return (Math.round(value * 10.0) / 10.0) + "s";
+    }
+
+    /**
+     * 渲染缓存 / mixin 段。
+     *
+     * <p>"时装完全不显示"最常见的原因就是 mixin 没生效，而玩家自己没法判断，
+     * 所以这里给出唯一能可靠判定的那一条（{@code AvatarRenderStateMixin}），
+     * 其余 mixin 只能给行为自检提示。
+     */
+    private static void appendRenderCache(StringBuilder out) {
+        out.append("==================== 渲染缓存 / mixin ====================\n");
+        out.append("已烘焙资源: ").append(CosmeticAssets.cachedCount())
+                .append(" 件，失败记录: ").append(CosmeticAssets.failureCount()).append(" 件\n");
+        out.append("动画实例: ").append(AnimationCache.size()).append(" 个（按 玩家 × 时装 计）\n");
+        out.append("AvatarRenderStateMixin: ").append(avatarMixinApplied()
+                ? "已生效（AvatarRenderState 实现了 FashionRenderState）"
+                : "未生效！时装不会渲染 —— 检查 mod 是否被正确加载、有无 mixin 冲突").append('\n');
+        out.append("其它 mixin 运行时无法直接判定，请按下面的行为自检:\n");
+        out.append("  - AvatarRendererMixin: 第三人称能看到自己身上的时装 → 生效\n");
+        out.append("  - PlayerModelMixin: 穿带 hideParts 的时装后对应身体部位消失 → 生效\n");
+        out.append("  - FirstPersonArmMixin: 第一人称能看到手臂上的时装 → 生效\n");
+        out.append("  - 层替换类（Cape/Wings/CustomHead/Armor/Deadmau5Ears/ParrotOnShoulder/"
+                + "SpinAttackEffect/StuckInBody/PlayerItemInHand）: 对应原版部件被时装替换或隐藏 → 生效\n");
+        out.append('\n');
+    }
+
+    /**
+     * {@code AvatarRenderStateMixin} 是否被应用。
+     *
+     * <p>该 mixin 让 {@link AvatarRenderState} 实现 {@link FashionRenderState}，
+     * 这是运行时能可靠判断"mixin 到底生效没"的那一条（其它 mixin 是行为改变，无法直接探测）。
+     */
+    private static boolean avatarMixinApplied() {
+        try {
+            return FashionRenderState.class.isAssignableFrom(AvatarRenderState.class);
+        } catch (Throwable t) {
+            // 类加载失败（极端环境）时按"未生效"报，比抛异常好
+            return false;
+        }
     }
 
     private static void appendLoadout(StringBuilder out) {

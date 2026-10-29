@@ -71,6 +71,7 @@
   "vmfashion.command.status.token_valid": "Token：剩余 %s 分钟（%s）",
   "vmfashion.command.status.assets": "资产下发：%s",
   "vmfashion.command.status.packs": "本地时装包：%s 个包 / %s 件时装（占用 %s）",
+  "vmfashion.command.status.render": "渲染缓存：资源 %s 件（失败 %s）/ 动画实例 %s",
   "vmfashion.command.status.loadout_empty": "当前没有穿戴任何时装",
   "vmfashion.command.status.worn_header": "当前穿戴：",
   "vmfashion.command.status.worn": "  %s → %s",

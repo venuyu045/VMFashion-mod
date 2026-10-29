@@ -71,6 +71,7 @@
   "vmfashion.command.status.token_valid": "Token: %s min left (%s)",
   "vmfashion.command.status.assets": "Asset delivery: %s",
   "vmfashion.command.status.packs": "Local packs: %s pack(s) / %s cosmetic(s) (%s used)",
+  "vmfashion.command.status.render": "Render cache: %s asset(s) (%s failed) / %s animation(s)",
   "vmfashion.command.status.loadout_empty": "Nothing equipped right now",
   "vmfashion.command.status.worn_header": "Currently worn:",
   "vmfashion.command.status.worn": "  %s → %s",

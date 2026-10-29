@@ -16,6 +16,7 @@ import com.venus.vmfashion.loadout.LoadoutService;
 import com.venus.vmfashion.loadout.WornCosmetic;
 import com.venus.vmfashion.net.FashionAuth;
 import com.venus.vmfashion.render.CosmeticAssets;
+import com.venus.vmfashion.render.anim.AnimationCache;
 import com.venus.vmfashion.sync.AssetSyncService;
 import com.venus.vmfashion.sync.SyncService;
 import com.venus.vmfashion.util.ChatUtil;
@@ -129,6 +130,10 @@ public final class FashionCommand {
                 registry.packs().size(),
                 registry.size(),
                 DiagExporter.humanBytes(packBytes())));
+
+        // 渲染侧缓存：动画不播 / 时装不显示时，先看这两项（"资源 0 件"= 从没渲染成功过）
+        source.sendFeedback(feedback("vmfashion.command.status.render",
+                CosmeticAssets.cachedCount(), CosmeticAssets.failureCount(), AnimationCache.size()));
 
         Map<String, String> worn = LocalLoadout.getInstance().snapshot();
         if (worn.isEmpty()) {
