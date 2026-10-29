@@ -55,6 +55,8 @@ public final class PackLoader {
     private static final String COSMETICS_DIR_NAME = "cosmetics";
     /** 发光层贴图的标准文件名；自动发现主贴图时要排除它。 */
     private static final String EMISSIVE_FILE_NAME = "emissive.png";
+    /** 服务端自动下发包的命名空间目录名（{@code packs/server/<packId>/}）。 */
+    public static final String SERVER_DIR_NAME = "server";
 
     private PackLoader() {
     }
@@ -62,6 +64,17 @@ public final class PackLoader {
     /** 时装包根目录。 */
     public static Path packsDir() {
         return FabricLoader.getInstance().getConfigDir().resolve("vmfashion").resolve("packs");
+    }
+
+    /**
+     * 服务端自动下发的时装包目录（{@code packs/server/<packId>/}）。
+     *
+     * <p>为什么要单独一层命名空间：自动下发的包是**远程数据**，必须和玩家自己放进去的包
+     * 隔离 —— 否则 {@code /vmfashion cache clear}、LRU 淘汰、包版本升级都可能误删玩家的手工包。
+     * 约定：用户包（{@code packs/<packId>/}）优先，同一个 packId 同时存在时保用户包。
+     */
+    public static Path serverPacksDir() {
+        return packsDir().resolve(SERVER_DIR_NAME);
     }
 
     /** 加载结果：成功的包 + 警告信息。 */
@@ -113,10 +126,25 @@ public final class PackLoader {
         List<Path> candidates = new ArrayList<>();
         try (Stream<Path> stream = Files.list(root)) {
             stream.filter(Files::isDirectory)
+                    // server/ 是自动下发的命名空间，它自己不是包，里面才是
+                    .filter(dir -> !SERVER_DIR_NAME.equals(dir.getFileName().toString()))
                     .sorted()
                     .forEach(candidates::add);
         } catch (IOException e) {
             warnings.add("读取时装包目录失败: " + e.getMessage());
+        }
+        // 用户包先入列（排序在前），同 packId 时由下面的 seenPackIds 保证用户包胜出；
+        // 服务端下发的包排在后面，被覆盖时只留一条警告。
+        Path serverRoot = root.resolve(SERVER_DIR_NAME);
+        if (Files.isDirectory(serverRoot)) {
+            try (Stream<Path> stream = Files.list(serverRoot)) {
+                stream.filter(Files::isDirectory)
+                        .filter(dir -> !Files.isSymbolicLink(dir))
+                        .sorted()
+                        .forEach(candidates::add);
+            } catch (IOException e) {
+                warnings.add("读取服务端时装包目录失败: " + e.getMessage());
+            }
         }
 
         Set<String> seenPackIds = new LinkedHashSet<>();
