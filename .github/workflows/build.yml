@@ -49,6 +49,10 @@ jobs:
       - name: Check jar structure
         run: bash tools/dev/check-jar.sh
 
+      # 元数据字段（schemaVersion/id/version/icon/contact/entrypoints/depends）
+      - name: Check mod metadata
+        run: bash tools/dev/check-mod-json.sh
+
       - name: Upload jars
         uses: actions/upload-artifact@v4
         with:
