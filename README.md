@@ -3,7 +3,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.0.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.0.1-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
@@ -37,7 +37,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.0.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.0.1.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
@@ -75,13 +75,13 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 
 ```bash
 ./gradlew test                 # 单元测试（纯逻辑，不加载 Minecraft 类）
-bash tools/verify/run.sh       # 无显卡环境的渲染链路自检（4 步）
+bash tools/verify/run.sh       # 无显卡环境的渲染链路自检（7 步）
 bash tools/dev/check-jar.sh    # 构建产物结构检查
 ```
 
 `tools/verify/` 用**真实生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`，
-检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩 / 动画骨骼名，
-并用 ASM 校验全部 12 个 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
+检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩 / 动画骨骼名 / 坏模型兜底，
+并用 ASM 校验全部 13 个 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
 
 CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测试）→ 渲染自检 →
 语言文件一致性 → jar 结构检查；打 tag 时 `release.yml` 自动发布 jar + sha256 + release notes。
@@ -183,9 +183,14 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 
 1. **时装 ID 必须对齐**：后端 `PUT /loadout` 会校验 `cosmeticId` 是否存在于 catalog 且 `enabled=true`。
    模组上报的是全局 ID `<packId>:<localId>`，catalog 的 `cosmeticId` 必须与它**完全一致**
-   （`packId` 与 `pack.json` 的 `id` 一致），否则上报会 400、玩家也互相看不到。
+   （`packId` 与 `pack.json` 的 `id` 一致），否则玩家互相看不到对方的时装。
+   本地包里的时装（如内置 `example:crown`）不在 catalog 时会被后端**跳过**（其余槽位照常保存，
+   响应里带 `warnings`）—— 想让它也能云端同步，就把它登记进 catalog。
 2. **皮肤站要进白名单**：后端的 `VMT_FASHION__YGGDRASIL_BASES` 里没有的皮肤站，其玩家会收到 `not_joined`。
-3. **nginx 上传上限**：后端上限 64MB，而生产 nginx `client_max_body_size` 只有 50m，大包会先 413。
+3. **nginx 上传上限**：后端单个资产上限 64MB、单个时装包上限 128MB，而生产 nginx
+   `client_max_body_size` 默认只有 50m，大包会先 413 —— 上传时装包前把这一项调大。
+4. **包签名与严格模式**：后端没配置签名私钥时，**不要**在 `trusted_keys.json` 里开
+   `"requireSignature": true`，否则客户端会拒绝**全部**服务端包（详见 `docs/fashion-api.md` §6.6）。
 
 ## 时装包格式
 
@@ -259,8 +264,6 @@ config/vmfashion/packs/<packId>/
 - **共享模型实例**：hideParts 是写 `ModelPart.visible`，而原版 `submitModel` 延迟到 flush 才
   `setupAnim`；理论上同屏有别人穿 hideParts 含手臂的时装时可能影响本地第一人称手臂。
   彻底修需要把 hideParts 改成"渲染时按状态判定"，属于架构改动。
-- **后端 scale**：后端存的 `scale` 还没进数据链路（`LoadoutProvider` 只传 `slot → cosmeticId`），
-  当前只支持时装包自己声明的 `scale` 与全局 `scale`。
 - **光影**：`submitCustomGeometry` 在 Iris 下是否走光影管线未验证（没有测试环境）。
 - **半透明排序**：自定义几何的半透明节点按 feature 分组提交、不做距离排序，
   与水/染色玻璃的前后关系由渲染阶段顺序决定。

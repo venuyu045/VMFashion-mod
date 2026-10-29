@@ -19,10 +19,13 @@
 
 | 端点 | 状态 | 作用 |
 |---|---|---|
-| `GET /packs` | **需新增** | 包清单（id / version / sha256 / bytes / url） |
-| `GET /packs/{id}/{version}/download` | **需新增** | 整包 zip 字节流 |
-| `POST /loadouts/resolve` | 需**补字段** | 每个 item 补 `packId` / `packVersion` |
-| `GET /loadout/me` | 需**补字段** | 同上 |
+| `GET /packs` | **参考实现已提供** | 包清单（id / version / sha256 / bytes / url） |
+| `GET /packs/{id}/{version}/download` | **参考实现已提供** | 整包 zip 字节流 |
+| `POST /loadouts/resolve` | 参考实现已补字段 | 每个 item 带 `packId` / `packVersion` |
+| `GET /loadout/me` | 参考实现已补字段 | 同上 |
+
+> "参考实现"指 VMTools 站点后端（`vmtools-next`）。自建后端按本文实现即可；**没实现也不会崩** ——
+> 客户端在拿不到这些端点时会**自动降级**（见 §9），只是"别人穿的时装我也能看见"这条能力不生效。
 
 客户端在拿不到这些端点时会**自动降级**（见 §9），不会崩、不会刷屏。
 
@@ -64,6 +67,11 @@ Authorization: Bearer <token>        # 可选：清单一般公开，带了也�
 ```
 
 也接受**直接返回数组**（`[{...}, {...}]`），客户端两种形状都认。
+
+> **兼容性（v1.0.1 起）**：很多后端习惯用 `{"items": [...]}` 包列表，客户端现在也认这个形状
+> （`packs` 优先，缺失时回退 `items`）；`publishedAt` 同时接受**毫秒 number**（推荐、契约原文）、
+> 数字字符串与 ISO-8601 字符串（`…Z` / `…+08:00` / 无时区按 UTC）。认不出的时间戳只影响展示，
+> **不会**让条目被丢弃。
 
 ### 字段表
 
@@ -325,7 +333,12 @@ def sign_pack(private_key_pem: bytes, pack_id: str, version: str, zip_bytes: byt
 
 不签名就拒绝会让**所有还没升级的后端 / 自建后端全部失效**（玩家看不到别人穿的时装，且报错难懂）。
 所以默认宽松 + 一次 warn，由运营方在信任库里开 `"requireSignature": true` 收紧。
-**官方后端建议在 v1.0 发布时就打开严格模式**，并在发布说明里写清。
+
+> ⚠️ **开严格模式的前提：后端必须真的在清单里给出 `signature`。**
+> 后端没实现签名（或私钥没配）时开 `requireSignature: true`，客户端会**拒绝全部服务端包**
+> （行为矩阵里"没有 signature → 拒绝"那一行），玩家看到的是一堆"时装加载失败"。
+> 顺序永远是：**先让 `/packs` 返回带签名的清单并验证通过 → 再开严格模式**。
+> 自建后端若暂时不做签名，请保持默认的宽松模式。
 
 ### 6.7 密钥轮换 / 泄露处置
 
