@@ -63,8 +63,33 @@ public final class CosmeticRenderDispatcher {
         }
         LoadoutService loadouts = LoadoutService.getInstance();
         float globalScale = config().getScale();
+        // 同一个时装 ID 被后端塞进两个槽位时只画一次：否则两套完全重合的几何会 z-fighting
+        // 闪烁，而且白花一倍顶点（发布加固审查提出）。正常情况下 loadout 很小，用字符串数组
+        // 做去重比建 Set 更省——这里是每帧每玩家调一次。
+        String[] seenIds = null;
+        int seenCount = 0;
         for (WornCosmetic worn : loadout.values()) {
-            CosmeticDefinition definition = loadouts.resolve(worn.cosmeticId());
+            if (worn == null || worn.cosmeticId() == null) {
+                // 穿戴表来自磁盘 / 后端，脏数据不能把渲染线程带崩
+                continue;
+            }
+            String cosmeticId = worn.cosmeticId();
+            if (seenIds == null) {
+                seenIds = new String[loadout.size()];
+            }
+            boolean duplicate = false;
+            for (int i = 0; i < seenCount; i++) {
+                if (cosmeticId.equals(seenIds[i])) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+            seenIds[seenCount++] = cosmeticId;
+
+            CosmeticDefinition definition = loadouts.resolve(cosmeticId);
             if (definition == null) {
                 continue;
             }
