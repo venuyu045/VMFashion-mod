@@ -23,6 +23,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | **可视化衣柜** | 默认按 `K` 打开（也可 `/vmfashion open`）：分类 tab、贴图缩略图网格、搜索、试穿/脱下、实时状态 |
 | **Bedrock 模型** | `model.geo.json` 由 GeckoLib 直接烘焙，Blockbench 里怎么摆游戏里就怎么显示（脚底原点 / Y 向上 / 1/16 格） |
 | **挂载骨骼** | `attachedBone` 支持 `body` / `head` / 左右手臂 / 左右腿，跟着部位一起动 |
+| **骨骼动画** | `anim.json`（Bedrock 动画）按关键帧循环播放；每（玩家 × 时装）独立相位，多人同屏互不干扰 |
 | **隐藏原版部件** | `hideParts` 不只隐藏玩家模型：盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏，不会穿模 |
 | **发光层** | `emissive.png` **只让真正不透明的区域发光**（逐 quad 遮罩），不描边、不受光照影响 |
 | **云端衣柜** | 双路认证（正版 / 皮肤站）、进服自动拉取、换装即时上报、周期刷新别人身上的变化 |
@@ -30,6 +31,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | **时装包自动下发** | 别人穿了本地没装的时装时，按 `sha256` 自动下载并安全解压到 `packs/server/`（可关） |
 | **重启不丢** | 本地穿戴落盘（`loadout.json`），纯本地模式也不会每次重启就光着 |
 | **可选 Mod Menu** | 装了 Mod Menu 会在模组列表里出现「配置」按钮，直接打开衣柜 |
+| **中英双语** | 界面与命令输出支持简体中文 / English（跟随游戏语言） |
 
 ## 安装（玩家）
 
@@ -77,8 +79,8 @@ bash tools/dev/check-jar.sh    # 构建产物结构检查
 ```
 
 `tools/verify/` 用**真实生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`，
-检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩，
-并用 ASM 校验全部 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
+检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩 / 动画骨骼名，
+并用 ASM 校验全部 12 个 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
 
 CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测试）→ 渲染自检 →
 语言文件一致性 → jar 结构检查；打 tag 时 `release.yml` 自动发布 jar + sha256 + release notes。
@@ -190,7 +192,7 @@ config/vmfashion/packs/<packId>/
     model.geo.json              # Bedrock 几何（format_version 1.12.0）
     texture.png                 # 贴图（建议 64x64）
     emissive.png                # 可选：发光层贴图（只让不透明区域发光）
-    anim.json                   # 可选：Bedrock 动画（会被解析，暂不播放）
+    anim.json                   # 可选：Bedrock 动画（循环播放）
     meta.json                   # 可选：单件时装元数据（优先级最高）
 ```
 
@@ -234,12 +236,17 @@ config/vmfashion/packs/<packId>/
 - **UUID 注入**：`AvatarRenderState` 只有会复用的 `int id`，由 mixin 挂 `UUID` 并实现 `FashionRenderState`。
 - **hideParts 跨层**：掩码在 `PlayerModel#setupAnim` 的 TAIL 算好写进 `AvatarRenderState`，
   8 个额外 mixin 在各自 layer 的 `submit`/`renderArmorPiece` 处读取并取消。
+- **动画状态隔离**：`BakedGeoModel` 是每件时装一份、所有玩家共享的，而 `GeoBone.frameSnapshot`
+  是共享骨骼上的可变字段。所以动画帧按（玩家 × 时装）各存一份，渲染时临时挂到共享骨骼上、
+  `finally` 里立刻还原 —— 不 clone 骨骼树，也不会让 A 的动画出现在 B 身上。
 - **热路径零分配**：`PoseStack` 用 `ThreadLocal` 复用、顶点发射复用 `Vector3f/Vector4f`、
   loadout 快照按 tick 缓存、失败缓存带 30 秒 TTL（修好包后不用重启游戏）。
 
 ## 当前限制
 
-- **动画**：`anim.json` 会被解析，但**还不播放**（骨骼快照已留好接口，下一版接入）。
+- **动画**：支持 Bedrock `anim.json` 的 `loop` / `animation_length` / `bones.{rotation,position,scale}`，
+  线性插值；**不支持** molang 表达式、`timeline`、音效关键帧、`animation_controllers`，
+  `catmullrom` 按线性处理；一件时装里有多个动画时播第一个。
 - **第一人称**：只挂在玩家模型层上，第一人称看不到自己的时装（和披风一致）。
 - **后端 scale**：后端存的 `scale` 还没进数据链路（`LoadoutProvider` 只传 `slot → cosmeticId`），
   当前只支持时装包自己声明的 `scale` 与全局 `scale`。

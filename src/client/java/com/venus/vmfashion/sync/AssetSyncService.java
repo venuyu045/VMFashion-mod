@@ -14,6 +14,8 @@ import com.venus.vmfashion.net.SafeZip;
 import com.venus.vmfashion.render.CosmeticAssets;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -317,36 +319,42 @@ public final class AssetSyncService {
         VMFashionClient.LOGGER.info("已清理服务端时装包缓存：{} 个目录", removed);
     }
 
-    /** 状态摘要，给 {@code /vmfashion status} 用。 */
-    public String describeStatus() {
+    /**
+     * 状态摘要，给 {@code /vmfashion status} 与衣柜底部状态行用。
+     *
+     * <p>i18n：返回 {@link Component}，文案在语言文件 {@code vmfashion.asset.status.*}。
+     * 这里只描述**状态本身**（"2 个包 / 3.5 MB"），"资产下发："这种标签由调用方
+     * （命令的 {@code vmfashion.command.status.assets}、衣柜的 {@code vmfashion.gui.status.assets}）拼，
+     * 否则会出现"资产下发：资产下发：…"的双前缀。
+     */
+    public Component describeStatus() {
         ModConfig current = config;
         if (current == null) {
-            return "资产下发：未初始化";
+            return Component.translatable("vmfashion.asset.status.not_initialized");
         }
         if (!current.isDownloadServerPacks()) {
-            return "资产下发：已在配置中关闭（downloadServerPacks=false）";
+            return Component.translatable("vmfashion.asset.status.disabled_in_config");
         }
         if (current.getApiBaseUrl().isBlank()) {
-            return "资产下发：未配置后端地址";
+            return Component.translatable("vmfashion.asset.status.no_backend");
         }
         if (!enabled) {
-            return "资产下发：未启用";
+            return Component.translatable("vmfashion.asset.status.not_enabled");
         }
         if (catalogUnsupported) {
-            return "资产下发：后端未提供 /packs，已禁用（只能看到本地已装的包）";
+            return Component.translatable("vmfashion.asset.status.unsupported");
         }
-        StringBuilder builder = new StringBuilder("资产下发：")
-                .append(installed.size()).append(" 个包 / ")
-                .append(humanBytes(cachedBytes));
+        MutableComponent status = Component.translatable("vmfashion.asset.status.active",
+                installed.size(), humanBytes(cachedBytes));
         int pending = pendingCount();
         if (pending > 0) {
-            builder.append(" · 队列 ").append(pending);
+            status.append(Component.translatable("vmfashion.asset.status.queue", pending));
         }
         int catalogSize = catalog == null ? 0 : catalog.size();
         if (catalogSize > 0) {
-            builder.append(" · 清单 ").append(catalogSize);
+            status.append(Component.translatable("vmfashion.asset.status.catalog", catalogSize));
         }
-        return builder.toString();
+        return status;
     }
 
     /** 已缓存的服务端包占用字节数，给诊断用（内存值，不做磁盘遍历）。 */
