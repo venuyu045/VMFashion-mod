@@ -82,7 +82,7 @@
 
 | 现象 | 原因 | 修法 |
 |---|---|---|
-| 第一人称看不到 | **当前限制**：时装只挂在第三人称玩家模型层 | 按 F5 切第三人称确认 |
+| 第一人称看不到 | ① 时装挂在 `head`/`body` 上（第一人称只渲染 `right_arm`/`left_arm` 挂件）；② 手里拿着物品（原版空手才画手臂） | 空手 + 换一件 `attachedBone` 为手臂的时装验证 |
 | 别人身上有，自己身上没有 | 纯本地模式（没配 `apiBaseUrl`）时"别人"渲染的是**你自己的**穿戴，容易看反 | `/vmfashion debug` 看自己的 UUID 那条 |
 | 周围有，远处没有 | 渲染距离默认 **64 格** | `config.json` 里调大 `renderDistance`（`<= 0` 表示不限制） |
 | 全部时装都不见了 | 配置里 `enabled=false` | 改成 `true`，`/vmfashion config reload` |

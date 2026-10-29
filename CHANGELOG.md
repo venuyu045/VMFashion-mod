@@ -7,7 +7,6 @@
 
 ### 计划中
 
-- 第一人称时装
 - 后端 `scale` 进数据链路
 - 包签名（Ed25519）与客户端验签
 - 光影（Iris）兼容性验证
@@ -18,6 +17,8 @@
 
 ### 新增
 
+- **第一人称时装**：挂在 `right_arm` / `left_arm` 上的时装在第一人称空手时可见，
+  跟随挥手 / 拉弓 / 装备切换动作；动画、emissive、scale、hideParts 全部自动跟随。
 - **骨骼动画播放**：`anim.json`（Bedrock 动画）按关键帧循环播放，
   每（玩家 × 时装）独立相位 —— 多人同屏各自动画互不干扰。
   支持 `loop` / `animation_length` / `bones.{rotation,position,scale}` 线性插值；

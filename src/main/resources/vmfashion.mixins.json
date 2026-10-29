@@ -9,6 +9,7 @@
     "CapeLayerMixin",
     "CustomHeadLayerMixin",
     "Deadmau5EarsLayerMixin",
+    "FirstPersonArmMixin",
     "ParrotOnShoulderLayerMixin",
     "PlayerItemInHandLayerMixin",
     "PlayerModelMixin",

@@ -74,9 +74,17 @@ public final class CosmeticRenderDispatcher {
         }
     }
 
-    private static void submitOne(PoseStack poseStack, SubmitNodeCollector collector, int packedLight,
-                                  UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
-                                  PlayerModel playerModel, float globalScale) {
+    /**
+     * 提交单件时装（第三人称与第一人称共用）。
+     *
+     * <p>包级可见：{@link FirstPersonRenderer} 也走这条路径——第一人称手臂的 PoseStack
+     * 同样是"原版模型部件空间"（部件自己的 pivot 由 {@code submitModelPart} 内部施加），
+     * 所以 {@link #applyModelSpace} + {@link #applyAttachment} 的换算是<strong>同一套</strong>，
+     * 不需要另写一份（见 {@link FirstPersonRenderer} 的注释与 tools/verify 的数值自检）。
+     */
+    static void submitOne(PoseStack poseStack, SubmitNodeCollector collector, int packedLight,
+                          UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
+                          PlayerModel playerModel, float globalScale) {
         float scale = definition.scale() * globalScale;
         // 动画状态是"每玩家 × 每时装"一份：BakedGeoModel 的骨骼是所有玩家共享的，
         // 直接把动画帧写进共享骨骼会让 A 的动画出现在 B 身上（路线图 §3.1）。
@@ -352,6 +360,23 @@ public final class CosmeticRenderDispatcher {
         // 不可能比玩家更可见。再加近似锥体测试的唯一效果是"屏幕边缘的玩家突然没时装"（误剔除），
         // 收益为 0，所以这里只保留距离。Camera#getCullFrustum() 虽然是 public，同样不建议用。
         return distance <= 0 || state.distanceToCameraSq <= distance * distance;
+    }
+
+    /**
+     * 第一人称是否该渲染该玩家的时装。
+     *
+     * <p>第一人称的手臂只可能是<strong>本地玩家</strong>（{@code FirstPersonHandsAndItemsRenderer}
+     * 只给相机实体画手），所以这里在通用判定之外再要求"uuid == 本地玩家"：
+     * 万一别的模组复用这条路径，也不会把别人的时装画到自己手上。
+     */
+    public static boolean shouldRenderFirstPerson(AvatarRenderState state) {
+        return shouldRender(state) && LoadoutService.getInstance().isLocalPlayer(uuidOf(state));
+    }
+
+    /** 配置里的全局缩放（第一人称与第三人称共用，不新增配置项）。 */
+    static float globalScale() {
+        ModConfig config = config();
+        return config == null ? 1.0F : config.getScale();
     }
 
     private static UUID uuidOf(AvatarRenderState state) {

@@ -24,6 +24,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | **Bedrock 模型** | `model.geo.json` 由 GeckoLib 直接烘焙，Blockbench 里怎么摆游戏里就怎么显示（脚底原点 / Y 向上 / 1/16 格） |
 | **挂载骨骼** | `attachedBone` 支持 `body` / `head` / 左右手臂 / 左右腿，跟着部位一起动 |
 | **骨骼动画** | `anim.json`（Bedrock 动画）按关键帧循环播放；每（玩家 × 时装）独立相位，多人同屏互不干扰 |
+| **第一人称** | 挂在 `right_arm` / `left_arm` 上的时装在第一人称也可见（空手时），跟随挥手/拉弓动作 |
 | **隐藏原版部件** | `hideParts` 不只隐藏玩家模型：盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏，不会穿模 |
 | **发光层** | `emissive.png` **只让真正不透明的区域发光**（逐 quad 遮罩），不描边、不受光照影响 |
 | **云端衣柜** | 双路认证（正版 / 皮肤站）、进服自动拉取、换装即时上报、周期刷新别人身上的变化 |
@@ -249,7 +250,11 @@ config/vmfashion/packs/<packId>/
 - **动画**：支持 Bedrock `anim.json` 的 `loop` / `animation_length` / `bones.{rotation,position,scale}`，
   线性插值；**不支持** molang 表达式、`timeline`、音效关键帧、`animation_controllers`，
   `catmullrom` 按线性处理；一件时装里有多个动画时播第一个。
-- **第一人称**：只挂在玩家模型层上，第一人称看不到自己的时装（和披风一致）。
+- **第一人称**：手臂挂件在**空手**时可见；手持物品时原版只渲染物品不渲染手臂，所以看不到
+  （这是原版行为，改它要动物品渲染路径）。头部/身体挂件在第一人称被相机包住，不做。
+- **共享模型实例**：hideParts 是写 `ModelPart.visible`，而原版 `submitModel` 延迟到 flush 才
+  `setupAnim`；理论上同屏有别人穿 hideParts 含手臂的时装时可能影响本地第一人称手臂。
+  彻底修需要把 hideParts 改成"渲染时按状态判定"，属于架构改动。
 - **后端 scale**：后端存的 `scale` 还没进数据链路（`LoadoutProvider` 只传 `slot → cosmeticId`），
   当前只支持时装包自己声明的 `scale` 与全局 `scale`。
 - **光影**：`submitCustomGeometry` 在 Iris 下是否走光影管线未验证（没有测试环境）。
