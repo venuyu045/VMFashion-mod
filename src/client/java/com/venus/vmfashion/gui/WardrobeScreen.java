@@ -567,9 +567,10 @@ public final class WardrobeScreen extends Screen {
 
         int textX = panelX + padding;
         int maxWidth = Math.max(40, panelWidth - 2 * padding);
-        // 两个 describeStatus 都不属于本模组界面，别的模块正在并行改；抛异常不能连累整个界面
-        String syncStatus = safeDescribe(() -> SyncService.getInstance().describeStatus());
-        String assetStatus = safeDescribe(() -> AssetSyncService.getInstance().describeStatus());
+        // 两个 describeStatus 都不属于本模组界面（其它成员在并行改）；抛异常不能连累整个界面。
+        // 两者现在都返回 Component，文案跟着客户端语言走。
+        Component syncStatus = safeComponent(() -> SyncService.getInstance().describeStatus());
+        Component assetStatus = safeComponent(() -> AssetSyncService.getInstance().describeStatus());
         drawTruncated(context, Component.translatable("vmfashion.gui.status.sync", syncStatus).getString(),
                 textX, top + 3, maxWidth, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
         drawTruncated(context, Component.translatable("vmfashion.gui.status.assets", assetStatus).getString(),
@@ -910,18 +911,19 @@ public final class WardrobeScreen extends Screen {
     }
 
     /**
-     * 调别的模块的 {@code describeStatus()}。
+     * 调别的模块的状态摘要（{@link Component} 版）。
      *
      * <p>界面渲染不能被别的模块的异常打断：抛了就显示占位符，日志留给它们自己。
      */
-    private static String safeDescribe(Supplier<String> supplier) {
+    private static Component safeComponent(Supplier<Component> supplier) {
         try {
-            String text = supplier.get();
-            return text == null ? EMPTY_VALUE : text;
+            Component text = supplier.get();
+            return text == null ? Component.literal("?") : text;
         } catch (Throwable t) {
-            return EMPTY_VALUE;
+            return Component.literal("?");
         }
     }
+
 
     /** 左侧分类 tab。{@code category == null} 表示「全部」。 */
     private record TabEntry(CosmeticCategory category, Component label,

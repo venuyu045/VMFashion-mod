@@ -24,15 +24,15 @@ public class ConfirmScreen extends Screen {
     private static final int DANGER_COLOR = 0xFFF87171;
 
     private final Screen parent;
-    private final String title;
-    private final String message;
-    private final String confirmText;
+    private final Component title;
+    private final Component message;
+    private final Component confirmText;
     private final Runnable onConfirm;
     private final Runnable onCancel;
 
-    public ConfirmScreen(Screen parent, String title, String message, String confirmText,
+    public ConfirmScreen(Screen parent, Component title, Component message, Component confirmText,
                          Runnable onConfirm, Runnable onCancel) {
-        super(Component.literal(title));
+        super(title);
         this.parent = parent;
         this.title = title;
         this.message = message;
@@ -42,14 +42,14 @@ public class ConfirmScreen extends Screen {
     }
 
     /**
-     * 创建删除确认对话框
+     * 创建删除确认对话框（文案走语言文件 {@code vmfashion.gui.*}）。
      */
-    public static ConfirmScreen createDeleteConfirm(Screen parent, String itemName, Runnable onConfirm) {
+    public static ConfirmScreen createDeleteConfirm(Screen parent, Component itemName, Runnable onConfirm) {
         return new ConfirmScreen(
                 parent,
-                "确认删除",
-                "确定要删除 " + itemName + " 吗？",
-                "删除",
+                Component.translatable("vmfashion.gui.confirm_delete_title"),
+                Component.translatable("vmfashion.gui.confirm_delete_message", itemName),
+                Component.translatable("vmfashion.gui.delete"),
                 onConfirm,
                 () -> {}
         );
@@ -67,7 +67,7 @@ public class ConfirmScreen extends Screen {
 
         // 确认按钮
         this.addRenderableWidget(Button.builder(
-                Component.literal(confirmText),
+                confirmText,
                 button -> {
                     if (onConfirm != null) onConfirm.run();
                     onClose();
@@ -76,7 +76,7 @@ public class ConfirmScreen extends Screen {
 
         // 取消按钮
         this.addRenderableWidget(Button.builder(
-                Component.literal("取消"),
+                Component.translatable("vmfashion.gui.cancel"),
                 button -> {
                     if (onCancel != null) onCancel.run();
                     onClose();
@@ -128,9 +128,9 @@ public class ConfirmScreen extends Screen {
         context.fill(x, y + 2, x + width, y + height - 2, color);
     }
 
-    private void drawCenteredText(GuiGraphicsExtractor context, String text, int centerX, int y, int color) {
-        int textWidth = this.font.width(text);
-        context.text(this.font, text, centerX - textWidth / 2, y, color);
+    /** 居中画一行可翻译文案（26.3 的 centeredText 签名：font, Component, centerX, y, color）。 */
+    private void drawCenteredText(GuiGraphicsExtractor context, Component text, int centerX, int y, int color) {
+        context.centeredText(this.font, text, centerX, y, color);
     }
 
     @Override

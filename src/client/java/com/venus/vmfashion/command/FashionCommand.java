@@ -27,19 +27,16 @@ import net.minecraft.network.chat.Component;
 
 import java.nio.file.Path;
 import java.util.Map;
+import java.util.function.Supplier;
 
 /**
  * 客户端命令 {@code /vmfashion ...}，只在本地执行，不会发给服务器。
  *
- * <p>新增文案一律走 {@link Component#translatable}（语言文件 {@code assets/vmfashion/lang/}），
- * 保留 {@code §} 颜色码的旧输出不动 —— i18n 统一迁移是后续单独一轮。
+ * <p>i18n：玩家可见文案全部走 {@link Component#translatable}（key 前缀 {@code vmfashion.command.*}），
+ * 颜色码写在语言文件的译文里（和原版 lang 的写法一致）；带参数的文案用 {@code %s} 占位，
+ * 不在 Java 里拼字符串。日志（{@code VMFashionClient.LOGGER}）仍然用中文，那是开发者看的。
  */
 public final class FashionCommand {
-
-    /** 聊天栏前缀，和 {@code ChatUtil#showLocalMessage} 保持一致。 */
-    private static final String PREFIX = "[VMFashion] ";
-    /** 聊天栏里长路径 / 长状态行的截断长度（聊天栏宽度有限，太长会被折行看不清）。 */
-    private static final int MAX_CHAT_TEXT = 160;
 
     private FashionCommand() {
     }
@@ -84,10 +81,10 @@ public final class FashionCommand {
         // 包换了之后，烘焙好的模型 / 注册过的贴图 / ID 解析缓存都要作废
         LoadoutService.getInstance().invalidate();
         CosmeticAssets.invalidate();
-        ChatUtil.showLocalMessage("重新加载完成：" + result.packs().size() + " 个包，"
-                + result.cosmeticCount() + " 件时装");
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.reload_done",
+                result.packs().size(), result.cosmeticCount()));
         for (String warning : result.warnings()) {
-            ChatUtil.showLocalMessage("§e警告：" + warning);
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.reload_warning", warning));
         }
         return 1;
     }
@@ -95,14 +92,15 @@ public final class FashionCommand {
     private static int list() {
         CosmeticRegistry registry = CosmeticRegistry.getInstance();
         if (registry.packs().isEmpty()) {
-            ChatUtil.showLocalMessage("没有加载到任何时装包，把包放到 config/vmfashion/packs/ 下再 /vmfashion reload");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.list_empty"));
             return 0;
         }
         for (CosmeticPack pack : registry.packs()) {
-            ChatUtil.showLocalMessage("§6" + pack.name() + " §7(" + pack.id() + " v" + pack.version()
-                    + ", " + pack.cosmetics().size() + " 件)");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.list_pack",
+                    pack.name(), pack.id(), pack.version(), pack.cosmetics().size()));
             for (CosmeticDefinition cosmetic : pack.cosmetics()) {
-                ChatUtil.showLocalMessage("  §b" + cosmetic.id() + " §7[" + cosmetic.category().key() + "]");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.list_cosmetic",
+                        cosmetic.id(), cosmetic.category().key()));
             }
         }
         return 1;
@@ -117,14 +115,13 @@ public final class FashionCommand {
     private static int status(FabricClientCommandSource source) {
         SyncService sync = SyncService.getInstance();
         source.sendFeedback(feedback("vmfashion.command.status.header"));
-        source.sendFeedback(feedback("vmfashion.command.status.sync", safeDescribe(sync::describeStatus)));
+        source.sendFeedback(feedback("vmfashion.command.status.sync", safeComponent(sync::describeStatus)));
         source.sendFeedback(tokenLine(sync));
 
+        // 资产行只留 describeStatus 本身：它已经带包数 / 占用 / 队列 / 清单，再拼一遍缓存与在飞就重复了
         AssetSyncService assets = AssetSyncService.getInstance();
         source.sendFeedback(feedback("vmfashion.command.status.assets",
-                safeDescribe(assets::describeStatus),
-                DiagExporter.humanBytes(safeCacheBytes(assets)),
-                safePending(assets)));
+                safeComponent(assets::describeStatus)));
 
         CosmeticRegistry registry = CosmeticRegistry.getInstance();
         source.sendFeedback(feedback("vmfashion.command.status.packs",
@@ -166,11 +163,11 @@ public final class FashionCommand {
     /** 手动把当前穿戴推送到后端。 */
     private static int sync() {
         if (!SyncService.getInstance().isEnabled()) {
-            ChatUtil.showLocalMessage("§e未配置时装后端地址，当前是纯本地模式");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.local_only"));
             return 0;
         }
         SyncService.getInstance().uploadLocalLoadout();
-        ChatUtil.showLocalMessage("已提交穿戴同步请求（结果看日志）");
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.sync_submitted"));
         return 1;
     }
 
@@ -219,12 +216,12 @@ public final class FashionCommand {
     private static int diag(FabricClientCommandSource source) {
         try {
             Path file = DiagExporter.export();
-            source.sendFeedback(feedback("vmfashion.command.diag.done", String.valueOf(file)));
+            source.sendFeedback(feedback("vmfashion.command.diag_done", String.valueOf(file)));
             VMFashionClient.LOGGER.info("诊断信息已导出: {}", file);
             return 1;
         } catch (Throwable t) {
             VMFashionClient.LOGGER.warn("导出诊断信息失败: {}", t.toString());
-            source.sendFeedback(feedback("vmfashion.command.diag.failed", String.valueOf(t)));
+            source.sendFeedback(feedback("vmfashion.command.diag_failed", String.valueOf(t)));
             return 0;
         }
     }
@@ -238,48 +235,45 @@ public final class FashionCommand {
         Minecraft minecraft = Minecraft.getInstance();
         ModConfig config = VMFashionClient.getInstance().getConfig();
 
-        ChatUtil.showLocalMessage("§6VMFashion 调试信息");
-        ChatUtil.showLocalMessage("  总开关=" + config.isEnabled()
-                + " 渲染他人=" + config.isRenderOtherPlayers()
-                + " 渲染距离=" + config.getRenderDistance()
-                + " 全局缩放=" + config.getScale());
-        ChatUtil.showLocalMessage("  界面缩放=" + config.getUiScale()
-                + " 动画时长=" + config.getAnimationDuration()
-                + " Toast=" + config.isToastEnabled());
-        ChatUtil.showLocalMessage("  已缓存资源=" + CosmeticAssets.cachedCount()
-                + " 失败=" + CosmeticAssets.failureCount());
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_header"));
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_render",
+                config.isEnabled(), config.isRenderOtherPlayers(),
+                config.getRenderDistance(), config.getScale()));
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_ui",
+                config.getUiScale(), config.getAnimationDuration(), config.isToastEnabled()));
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_cache",
+                CosmeticAssets.cachedCount(), CosmeticAssets.failureCount()));
 
         if (minecraft.player == null) {
-            ChatUtil.showLocalMessage("  §7当前没有玩家实体，无法自检");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_no_player"));
             return 0;
         }
 
         java.util.UUID uuid = minecraft.player.getUUID();
-        ChatUtil.showLocalMessage("  本地玩家 UUID=" + uuid);
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_uuid", uuid));
 
         Map<String, String> loadout = LoadoutService.getInstance().loadoutFor(uuid);
         if (loadout.isEmpty()) {
-            ChatUtil.showLocalMessage("  §7没有穿戴任何时装（/vmfashion equip <id>）");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_empty"));
             return 1;
         }
 
         for (Map.Entry<String, String> entry : loadout.entrySet()) {
             CosmeticDefinition definition = LoadoutService.getInstance().resolve(entry.getValue());
             if (definition == null) {
-                ChatUtil.showLocalMessage("  §c" + entry.getValue() + " 找不到定义");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_missing",
+                        entry.getValue()));
                 continue;
             }
             CosmeticAssets.Entry assets = CosmeticAssets.get(definition);
             if (assets == null) {
-                ChatUtil.showLocalMessage("  §c" + definition.id() + " 资源加载失败（看日志）");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_asset_failed",
+                        definition.id()));
                 continue;
             }
-            ChatUtil.showLocalMessage("  §a" + definition.id()
-                    + " §7分类=" + definition.category().key()
-                    + " 骨骼=" + definition.attachedBone()
-                    + " 根骨骼=" + assets.model().topLevelBones().length
-                    + " 四边形=" + assets.quadCount()
-                    + " 贴图=" + assets.texture());
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.debug_entry",
+                    definition.id(), definition.category().key(), definition.attachedBone(),
+                    assets.model().topLevelBones().length, assets.quadCount(), assets.texture()));
         }
         return 1;
     }
@@ -287,11 +281,12 @@ public final class FashionCommand {
     private static int equip(String id) {
         CosmeticDefinition cosmetic = CosmeticRegistry.getInstance().find(id);
         if (cosmetic == null) {
-            ChatUtil.showLocalMessage("§c找不到时装：" + id + "（先 /vmfashion list 看看有什么）");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.equip_not_found", id));
             return 0;
         }
         LocalLoadout.getInstance().wear(cosmetic);
-        ChatUtil.showLocalMessage("已穿上 §b" + cosmetic.name() + "§r（" + cosmetic.category().key() + "）");
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.equipped",
+                cosmetic.name(), cosmetic.category().key()));
         VMFashionClient.LOGGER.info("穿上时装 {} -> {}", cosmetic.category().key(), cosmetic.id());
         SyncService.getInstance().uploadLocalLoadout();
         return 1;
@@ -300,19 +295,32 @@ public final class FashionCommand {
     private static int unequip(String category) {
         String removed = LocalLoadout.getInstance().unwear(category.toLowerCase());
         if (removed == null) {
-            ChatUtil.showLocalMessage("§7该分类本来就没有穿戴：" + category);
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.unequip_none", category));
             return 0;
         }
-        ChatUtil.showLocalMessage("已脱下 §b" + removed);
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.unequipped", removed));
         SyncService.getInstance().uploadLocalLoadout();
         return 1;
     }
 
     // ==================== 工具 ====================
 
-    /** 拼一条带前缀的可翻译反馈（前缀和旧命令的 {@code ChatUtil} 输出保持一致）。 */
+    /**
+     * 命令反馈：带 {@code [VMFashion] } 前缀的可翻译文案。
+     *
+     * <p>前缀由 {@link ChatUtil#prefixed} 统一拼装 —— 聊天栏和命令反馈必须是同一个前缀。
+     */
     private static Component feedback(String key, Object... args) {
-        return Component.literal(PREFIX).append(Component.translatable(key, args));
+        return ChatUtil.prefixed(Component.translatable(key, args));
+    }
+
+    /** 服务端包缓存占用（清理缓存时用来告诉玩家释放了多少）；别的模块抛异常也不能中断命令。 */
+    private static long safeCacheBytes(AssetSyncService assets) {
+        try {
+            return assets.cacheBytes();
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     /** 本地时装包目录占用字节数（给 status / 诊断用）。 */
@@ -324,33 +332,17 @@ public final class FashionCommand {
         }
     }
 
-    private static long safeCacheBytes(AssetSyncService assets) {
+    /**
+     * 别的模块的状态摘要（Component 版）。
+     *
+     * <p>命令不能因为别的模块抛异常就中断，失败时给一个占位符。
+     */
+    private static Component safeComponent(Supplier<Component> supplier) {
         try {
-            return assets.cacheBytes();
+            Component text = supplier.get();
+            return text == null ? Component.literal("?") : text;
         } catch (Throwable t) {
-            return 0L;
+            return Component.literal("?");
         }
-    }
-
-    private static int safePending(AssetSyncService assets) {
-        try {
-            return assets.pendingCount();
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    /** 别的模块的 describeStatus() 抛异常时不能把命令打断。 */
-    private static String safeDescribe(java.util.function.Supplier<String> supplier) {
-        try {
-            String text = supplier.get();
-            return text == null ? "?" : truncate(text);
-        } catch (Throwable t) {
-            return "?";
-        }
-    }
-
-    private static String truncate(String text) {
-        return text.length() <= MAX_CHAT_TEXT ? text : text.substring(0, MAX_CHAT_TEXT) + "…";
     }
 }

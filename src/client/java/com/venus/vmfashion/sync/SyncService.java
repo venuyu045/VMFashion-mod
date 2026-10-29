@@ -12,6 +12,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.AbstractClientPlayer;
+import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -328,14 +329,18 @@ public final class SyncService {
     // ==================== 错误可读化 ====================
 
     /**
-     * 后端错误码 → 玩家能看懂的中文提示。
+     * 后端错误码 → 玩家能看懂的提示。
      *
      * <p>旧实现把这些错误只打进日志：玩家换装没生效，却完全不知道是"时装被禁用"还是
      * "槽位超限"还是"没绑定网站"。抽成包可见的静态方法，方便单测。
      *
+     * <p>i18n：文案全部在语言文件里（{@code vmfashion.error.*}），这里只做错误码到 key 的映射。
+     * 认证链路（{@link FashionAuth}）抛的 {@code ApiException} 也在这里翻译 ——
+     * 它自带的 message 是中文兜底，只进日志，不再直接给玩家看。
+     *
      * @return 提示文案；{@code null} 表示不值得打扰玩家（例如纯网络抖动，聊天栏刷这个没用）
      */
-    static String describeApiError(Throwable throwable) {
+    static Component describeApiError(Throwable throwable) {
         FashionApi.ApiException apiException = findApiException(throwable);
         if (apiException == null) {
             return null;
@@ -343,30 +348,65 @@ public final class SyncService {
         String code = apiException.code() == null ? "" : apiException.code().toLowerCase(Locale.ROOT);
         String detail = apiException.getMessage() == null ? "" : apiException.getMessage();
         return switch (code) {
-            case "unknown_cosmetic" -> "§c时装不存在或已下架：" + detail;
-            case "cosmetic_disabled" -> "§c这件时装已被管理员禁用：" + detail;
-            case "invalid_cosmetic" -> "§c后端不认识这件时装：" + detail;
-            case "too_many_items" -> "§c穿戴槽位超过后端上限，请先卸下几件再试";
-            case "not_joined" -> "§e这个账号还没绑定网站，执行 §b/vmfashion bind §e完成绑定";
-            case "no_token" -> "§e尚未登录时装后端，执行 §b/vmfashion login";
-            case "rate_limited", "too_many_requests", "http_429" -> "§e操作太频繁，请稍后再试";
-            case "invalid_request", "bad_request", "http_400" -> "§c请求被后端拒绝：" + detail;
-            case "forbidden", "http_403" -> "§c没有权限执行这个操作：" + detail;
+            case "unknown_cosmetic" -> Component.translatable("vmfashion.error.unknown_cosmetic", detail);
+            case "cosmetic_disabled" -> Component.translatable("vmfashion.error.cosmetic_disabled", detail);
+            case "invalid_cosmetic" -> Component.translatable("vmfashion.error.invalid_cosmetic", detail);
+            case "too_many_items" -> Component.translatable("vmfashion.error.too_many_items");
+            case "not_joined" -> Component.translatable("vmfashion.error.not_joined");
+            // no_token 有两个来源：status=-1 是启动器没给登录令牌，401 是时装后端没登录
+            case "no_token" -> apiException.status() == -1
+                    ? Component.translatable("vmfashion.error.no_access_token")
+                    : Component.translatable("vmfashion.error.no_token");
+            case "rate_limited", "too_many_requests", "http_429" ->
+                    Component.translatable("vmfashion.error.rate_limited");
+            case "invalid_request", "bad_request", "http_400" ->
+                    Component.translatable("vmfashion.error.bad_request", detail);
+            case "forbidden", "http_403" -> Component.translatable("vmfashion.error.forbidden", detail);
+            // —— 认证链路（FashionAuth）——
+            case "no_session" -> Component.translatable("vmfashion.error.no_session");
+            case "no_profile" -> Component.translatable("vmfashion.error.no_profile");
+            case "bad_challenge" -> Component.translatable("vmfashion.error.bad_challenge");
+            case "bad_verify" -> Component.translatable("vmfashion.error.bad_verify");
+            case "bad_session_url" -> Component.translatable("vmfashion.error.bad_session_url");
+            case "join_failed" -> Component.translatable("vmfashion.error.join_failed", apiException.status());
+            // —— 请求层（FashionApi / PackCatalog）——
+            case "no_base_url" -> Component.translatable("vmfashion.error.no_base_url");
+            case "bad_base_url" -> Component.translatable("vmfashion.error.bad_base_url", detail);
+            case "network_error" -> Component.translatable("vmfashion.error.network_error", detail);
+            case "circuit_open" -> Component.translatable("vmfashion.error.circuit_open");
+            case "bad_json" -> Component.translatable("vmfashion.error.bad_json");
+            case "bad_asset_key" -> Component.translatable("vmfashion.error.bad_asset_key");
             default -> null;
         };
     }
 
+    /**
+     * 把异常翻成玩家能看懂的"失败原因"。
+     *
+     * <p>后端错误码优先走语言文件；拿不到（纯网络异常、系统异常等）就退化成异常原文 ——
+     * 那类文本本来就是英文 / 系统语言，强行翻译反而更难懂。
+     */
+    private static Component failureDetail(Throwable throwable) {
+        Component mapped = describeApiError(throwable);
+        return mapped != null ? mapped : Component.literal(rootMessage(throwable));
+    }
+
     /** 把后端错误码转成聊天栏提示（同一条消息去重，避免刷屏）。 */
     private void notifyError(Throwable throwable) {
-        String message = describeApiError(throwable);
-        if (message == null || message.isBlank()) {
+        Component message = describeApiError(throwable);
+        if (message == null) {
+            return;
+        }
+        // 去重用纯文本：Component 每次都是新对象，equals 比较的是内容但这里只是去重，取字符串更直观
+        String text = message.getString();
+        if (text.isBlank()) {
             return;
         }
         long now = System.currentTimeMillis();
-        if (message.equals(lastChatMessage) && now - lastChatAtMs < CHAT_DEDUPE_MS) {
+        if (text.equals(lastChatMessage) && now - lastChatAtMs < CHAT_DEDUPE_MS) {
             return;
         }
-        lastChatMessage = message;
+        lastChatMessage = text;
         lastChatAtMs = now;
         ChatUtil.showLocalMessage(message);
     }
@@ -392,7 +432,7 @@ public final class SyncService {
     public void authenticateAsync(boolean notifyChat) {
         if (!enabled) {
             if (notifyChat) {
-                ChatUtil.showLocalMessage("§e未配置时装后端地址，当前是纯本地模式");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.local_only"));
             }
             return;
         }
@@ -402,19 +442,20 @@ public final class SyncService {
         }
         ModConfig config = VMFashionClient.getInstance().getConfig();
         if (notifyChat) {
-            ChatUtil.showLocalMessage("正在登录时装系统…");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.logging_in"));
         }
         currentAuth.authenticate(config.getAuthServer()).whenComplete((session, throwable) -> {
             if (throwable != null) {
                 VMFashionClient.LOGGER.warn("时装认证失败: {}", throwable.toString());
                 if (notifyChat) {
-                    ChatUtil.showLocalMessage("§c登录失败：" + rootMessage(throwable));
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.login_failed",
+                            failureDetail(throwable)));
                 }
                 return;
             }
             if (notifyChat) {
-                ChatUtil.showLocalMessage("§a登录成功：§b" + session.mcName()
-                        + "§r（" + session.authType() + "）");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.login_success",
+                        session.mcName(), session.authType()));
             }
             // 首次登录：云端为空且本地已有穿戴时才推送本地，否则以云端为准
             refreshFromRemote(true);
@@ -434,7 +475,7 @@ public final class SyncService {
         FashionAuth currentAuth = auth;
         if (!enabled || currentAuth == null || api == null) {
             if (notifyChat) {
-                ChatUtil.showLocalMessage("§e未配置时装后端地址，当前是纯本地模式");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.local_only"));
             }
             return;
         }
@@ -445,14 +486,15 @@ public final class SyncService {
         }
         // 没登录 / token 过期：先认证，成功后再继续绑定
         if (notifyChat) {
-            ChatUtil.showLocalMessage("§7尚未登录时装后端，正在先完成认证…");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.auth_before_bind"));
         }
         ModConfig config = VMFashionClient.getInstance().getConfig();
         currentAuth.authenticate(config.getAuthServer()).whenComplete((newSession, throwable) -> {
             if (throwable != null) {
                 VMFashionClient.LOGGER.warn("绑定前认证失败: {}", throwable.toString());
                 if (notifyChat) {
-                    ChatUtil.showLocalMessage("§c认证失败，无法绑定：" + rootMessage(throwable));
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.auth_failed_for_bind",
+                            failureDetail(throwable)));
                 }
                 return;
             }
@@ -473,7 +515,8 @@ public final class SyncService {
             if (throwable != null) {
                 VMFashionClient.LOGGER.warn("申请绑定码失败: {}", throwable.toString());
                 if (notifyChat) {
-                    ChatUtil.showLocalMessage("§c申请绑定码失败：" + rootMessage(throwable));
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_request_failed",
+                            failureDetail(throwable)));
                 }
                 return;
             }
@@ -483,13 +526,13 @@ public final class SyncService {
             int interval = Math.max(1, intField(json, "interval", 3));
             if (userCode.isBlank() || deviceCode.isBlank()) {
                 if (notifyChat) {
-                    ChatUtil.showLocalMessage("§c后端没有返回绑定码，请确认站点已升级到含时装模块的版本");
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_no_code"));
                 }
                 return;
             }
-            ChatUtil.showLocalMessage("§6绑定到网站：§e§l" + userCode);
-            ChatUtil.showLocalMessage("§7在网站「时装绑定」页输入这个 6 位码（"
-                    + Math.max(1, expiresIn / 60) + " 分钟内有效）");
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_code", userCode));
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_code_hint",
+                    Math.max(1, expiresIn / 60)));
             pollDeviceStatus(epoch, deviceCode, interval,
                     System.currentTimeMillis() + expiresIn * 1000L, notifyChat);
         });
@@ -510,20 +553,20 @@ public final class SyncService {
                 if (System.currentTimeMillis() < deadline) {
                     schedulePoll(epoch, deviceCode, interval, deadline, notifyChat);
                 } else if (notifyChat) {
-                    ChatUtil.showLocalMessage("§e绑定码已过期，请重新执行 /vmfashion bind");
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_expired"));
                 }
                 return;
             }
             String status = stringField(json, "status");
             if ("approved".equals(status)) {
-                ChatUtil.showLocalMessage("§a已绑定到网站账号，现在可以在网页衣柜里换装了");
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_success"));
                 // 绑定完成后云端衣柜成为权威来源，避免用本地状态覆盖网站已保存的穿戴
                 refreshFromRemote(true);
                 return;
             }
             if ("expired".equals(status) || System.currentTimeMillis() >= deadline) {
                 if (notifyChat) {
-                    ChatUtil.showLocalMessage("§e绑定码已过期，请重新执行 /vmfashion bind");
+                    ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.bind_expired"));
                 }
                 return;
             }
@@ -659,16 +702,22 @@ public final class SyncService {
         });
     }
 
-    /** 给命令用的状态摘要。 */
-    public String describeStatus() {
+    /**
+     * 状态摘要（{@code /vmfashion status} 与衣柜底部状态行共用）。
+     *
+     * <p>返回 {@link Component} 而不是 String：这段文字会直接显示给玩家，
+     * 必须跟着客户端语言走（文案在 {@code vmfashion.status.*}）。
+     */
+    public Component describeStatus() {
         if (!enabled) {
-            return "纯本地模式（未配置后端）";
+            return Component.translatable("vmfashion.status.local_only");
         }
         FashionAuth.Session session = auth == null ? null : auth.session();
         if (session == null) {
-            return "已配置后端 " + api.baseUrl() + "，尚未登录";
+            return Component.translatable("vmfashion.status.not_logged_in", api.baseUrl());
         }
-        return "已登录 " + session.mcName() + "（" + session.authType() + "）→ " + api.baseUrl();
+        return Component.translatable("vmfashion.status.logged_in",
+                session.mcName(), session.authType(), api.baseUrl());
     }
 
     private static String rootMessage(Throwable throwable) {

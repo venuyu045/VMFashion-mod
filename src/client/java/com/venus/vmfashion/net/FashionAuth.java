@@ -39,6 +39,13 @@ import java.util.concurrent.CompletionException;
  *
  * <p>皮肤站地址的探测顺序：JVM 参数里的 authlib-injector javaagent → 配置项。
  * 正版玩家两者都没有，留空即可。
+ *
+ * <p><b>i18n 约定</b>：这里抛出的 {@link FashionApi.ApiException} 的 message 是**开发者兜底文案**
+ * （中文，只会进日志）。玩家看到的是 {@code sync/SyncService#describeApiError} 按错误码
+ * （{@code no_session} / {@code no_profile} / {@code no_token} / {@code bad_challenge} /
+ * {@code bad_verify} / {@code bad_session_url} / {@code join_failed}）翻译出来的文案
+ * （语言文件 {@code vmfashion.error.*}）。<b>新增错误码时，必须同步在 SyncService 里补一条映射</b>，
+ * 否则玩家会看到这条中文兜底。
  */
 public final class FashionAuth {
 

@@ -210,7 +210,8 @@ public final class DiagExporter {
         try {
             SyncService sync = SyncService.getInstance();
             out.append("enabled: ").append(sync.isEnabled()).append('\n');
-            out.append("状态: ").append(sync.describeStatus()).append('\n');
+            // 诊断文件是给开发者看的，统一用当前语言的纯文本
+            out.append("状态: ").append(sync.describeStatus().getString()).append('\n');
             var auth = sync.auth();
             var session = auth == null ? null : auth.session();
             if (session == null) {
@@ -232,7 +233,7 @@ public final class DiagExporter {
         out.append("==================== 资产下发 ====================\n");
         try {
             AssetSyncService assets = AssetSyncService.getInstance();
-            out.append("状态: ").append(assets.describeStatus()).append('\n');
+            out.append("状态: ").append(assets.describeStatus().getString()).append('\n');
             out.append("缓存占用: ").append(assets.cacheBytes()).append(" 字节\n");
             out.append("在飞/排队: ").append(assets.pendingCount()).append('\n');
         } catch (Throwable t) {
