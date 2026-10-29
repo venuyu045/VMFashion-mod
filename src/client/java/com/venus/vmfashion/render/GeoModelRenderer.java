@@ -7,6 +7,7 @@ import com.geckolib.cache.model.GeoVertex;
 import com.geckolib.cache.model.cuboid.CuboidGeoBone;
 import com.geckolib.cache.model.cuboid.GeoCube;
 import com.geckolib.animation.state.BoneSnapshot;
+import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.render.anim.AnimationFrame;
 import com.geckolib.util.RenderUtil;
 import com.mojang.blaze3d.vertex.PoseStack;
@@ -16,7 +17,10 @@ import org.joml.Matrix4f;
 import org.joml.Vector3f;
 import org.joml.Vector4f;
 
+import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 把 GeckoLib 的 {@link BakedGeoModel} 画进 26.x 的提交式渲染管线。
@@ -55,6 +59,21 @@ public final class GeoModelRenderer {
      * 不会嵌套调用 {@link #render}，所以同一个实例可以反复用。
      */
     private static final ThreadLocal<Scratch> SCRATCH = ThreadLocal.withInitial(Scratch::new);
+
+    /**
+     * 渲染时抛过异常的模型（按实例身份）。
+     *
+     * <p>用 {@link LinkedHashSet} 而不是 {@code IdentityHashMap} 的 set：需要"插入顺序"来淘汰最早的条目。
+     * {@link BakedGeoModel} 没有重写 {@code equals}/{@code hashCode}，所以这里就是身份语义。
+     * 渲染线程独占，不需要并发容器。
+     */
+    private static final Set<BakedGeoModel> BROKEN = new LinkedHashSet<>();
+    /** 拉黑表上限：坏模型再多也不该让集合无限长、或永久持有旧模型。 */
+    private static final int MAX_BROKEN = 256;
+    /** 最多打多少条"模型坏了"的日志，避免一堆坏模型把日志刷爆（之后只打一条汇总）。 */
+    private static final int MAX_BROKEN_LOGS = 16;
+    private static int brokenLogs;
+    private static boolean brokenOverflowLogged;
 
     private GeoModelRenderer() {
     }
@@ -109,6 +128,54 @@ public final class GeoModelRenderer {
         if (model == null) {
             return;
         }
+        // 渲染回调里抛异常 = 客户端崩溃（26.x 的 flush 在主循环里，没有谁替我们兜）。
+        // 一个坏模型（缺骨骼 / 空立方体 / NaN 顶点 / 层级过深爆栈）只应该"这一件不画"，
+        // 不该让玩家掉线 —— 陌生人装模组时最怕的就是"某个人的时装让我崩游戏"。
+        if (BROKEN.contains(model)) {
+            return;
+        }
+        try {
+            drawModel(model, pose, consumer, light, overlay, color, mask, frame);
+        } catch (Throwable t) {
+            markBroken(model, t);
+        }
+    }
+
+    /**
+     * 把渲染失败的模型拉黑（按实例身份，渲染线程独占）。
+     *
+     * <p>用身份而不是 ID：{@code /vmfashion reload} 会重新烘焙出新的
+     * {@link BakedGeoModel} 实例，新实例不在集合里 → 自动重试一次，玩家改好包就能自愈，
+     * 不需要额外的清理钩子。
+     *
+     * <p>表满时<strong>淘汰最早的一条</strong>（而不是整表清空）：整表清空会让所有坏模型立刻
+     * 重试一遍，一帧里连崩 N 次；淘汰最早的只影响一件，且内存仍然有界。
+     */
+    private static void markBroken(BakedGeoModel model, Throwable error) {
+        if (BROKEN.size() >= MAX_BROKEN) {
+            Iterator<BakedGeoModel> oldest = BROKEN.iterator();
+            if (oldest.hasNext()) {
+                oldest.next();
+                oldest.remove();
+            }
+        }
+        BROKEN.add(model);
+        if (brokenLogs < MAX_BROKEN_LOGS) {
+            brokenLogs++;
+            // 带 identityHashCode：日志里能和 CosmeticAssets 的"烘焙失败"对上号，
+            // 玩家报"某件时装不显示"时至少有线索可查
+            VMFashionClient.LOGGER.warn("时装模型渲染失败，已跳过该模型（第 {} 个，identity={}，reload 后会重试）: {}",
+                    brokenLogs, Integer.toHexString(System.identityHashCode(model)), error.toString());
+            if (brokenLogs == MAX_BROKEN_LOGS && !brokenOverflowLogged) {
+                brokenOverflowLogged = true;
+                VMFashionClient.LOGGER.warn("时装模型渲染失败日志已达上限 {} 条，后续只跳过不再记录；"
+                        + "执行 /vmfashion reload 可重试全部模型", MAX_BROKEN_LOGS);
+            }
+        }
+    }
+
+    private static void drawModel(BakedGeoModel model, PoseStack.Pose pose, VertexConsumer consumer,
+                                  int light, int overlay, int color, EmissiveMask mask, AnimationFrame frame) {
         // 动画在这里求值（而不是 submit 阶段）：时间最接近真实渲染，也避免"提交时算好、flush 时已过时"
         Map<GeoBone, BoneSnapshot> animated = null;
         if (frame != null) {
@@ -161,7 +228,16 @@ public final class GeoModelRenderer {
 
     private static void drawCubes(CuboidGeoBone bone, PoseStack stack, VertexConsumer consumer,
                                   int light, int overlay, int color, EmissiveMask mask, Scratch scratch) {
-        for (GeoCube cube : bone.cubes) {
+        GeoCube[] cubes = bone.cubes;
+        if (cubes == null) {
+            // 防御式：空骨骼（只用来挂子骨骼）在个别导出器里 cubes 可能是 null，
+            // 让这一个骨骼不画即可，不该连累整个模型
+            return;
+        }
+        for (GeoCube cube : cubes) {
+            if (cube == null) {
+                continue;
+            }
             // 复刻 GeoCube#render：绕 pivot 位移 → 旋转 → 移回来，然后逐 quad 出顶点
             stack.pushPose();
             cube.translateToPivotPoint(stack);
@@ -170,17 +246,19 @@ public final class GeoModelRenderer {
             Matrix4f matrix = stack.last().pose();
             Matrix3f normalMatrix = stack.last().normal();
             GeoQuad[] quads = cube.quads();
-            for (GeoQuad quad : quads) {
-                if (quad == null) {
-                    continue;
+            if (quads != null) {
+                for (GeoQuad quad : quads) {
+                    if (quad == null) {
+                        continue;
+                    }
+                    if (mask != null && !mask.isEmissive(quad)) {
+                        continue;
+                    }
+                    Vector3f normal = scratch.normal.set(quad.normalX(), quad.normalY(), quad.normalZ());
+                    normalMatrix.transform(normal);
+                    RenderUtil.fixInvertedFlatCube(cube, normal);
+                    emitQuad(matrix, normal, consumer, quad, light, overlay, color, scratch);
                 }
-                if (mask != null && !mask.isEmissive(quad)) {
-                    continue;
-                }
-                Vector3f normal = scratch.normal.set(quad.normalX(), quad.normalY(), quad.normalZ());
-                normalMatrix.transform(normal);
-                RenderUtil.fixInvertedFlatCube(cube, normal);
-                emitQuad(matrix, normal, consumer, quad, light, overlay, color, scratch);
             }
             stack.popPose();
         }
@@ -189,8 +267,15 @@ public final class GeoModelRenderer {
     /** 复刻 {@code GeoQuad#render}，但不分配（原版每顶点 new 一个 Vector4f）。 */
     private static void emitQuad(Matrix4f matrix, Vector3f normal, VertexConsumer consumer, GeoQuad quad,
                                  int light, int overlay, int color, Scratch scratch) {
+        GeoVertex[] points = quad.vertices();
+        if (points == null) {
+            return;
+        }
         Vector4f vertex = scratch.vertex;
-        for (GeoVertex point : quad.vertices()) {
+        for (GeoVertex point : points) {
+            if (point == null) {
+                continue;
+            }
             vertex.set(point.posX(), point.posY(), point.posZ(), 1.0F);
             matrix.transform(vertex);
             consumer.addVertex(vertex.x, vertex.y, vertex.z, color,

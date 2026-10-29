@@ -64,11 +64,21 @@ public final class AnimationTrack {
             out[2] = z[count - 1];
             return;
         }
-        // 关键帧通常只有几个，线性扫描比二分更快也更好读
-        int index = 0;
-        while (index < count - 1 && times[index + 1] <= time) {
-            index++;
+        // 二分查找：找到最后一个 times[index] <= time 的下标（结果与线性扫描完全一致）。
+        // 关键帧通常只有几个，线性扫描本来也不慢；但"烘焙过 / 恶意"的动画可能有上万个关键帧，
+        // 那时线性扫描会让每帧采样退化成 O(n)（骨骼数 × 3 通道 × n），直接卡死一帧。
+        // 二分是 O(log n)，对少量关键帧的额外开销也可以忽略。
+        int lo = 0;
+        int hi = count - 1;
+        while (hi - lo > 1) {
+            int mid = (lo + hi) >>> 1;
+            if (times[mid] <= time) {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
         }
+        int index = lo;
         double span = times[index + 1] - times[index];
         double t = span <= 0.0 ? 0.0 : (time - times[index]) / span;
         float f = (float) t;
