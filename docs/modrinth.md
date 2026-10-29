@@ -54,6 +54,20 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 | GeckoLib | `5.5.7` |
 | Mod Menu（可选） | `21.0.0` |
 
+## 版本亮点（v1.0.0 可直接用）
+
+```
+## v1.0.0 — 首个可公开发布版本
+
+相对 0.2.0，补齐了 v1.0 清单上的最后四块：
+- 后端 scale 进数据链路（网页衣柜里调的时装大小现在会生效）
+- 时装包 Ed25519 签名与客户端验签（可开严格模式）
+- 发布加固：坏模型不再崩客户端、动画缓存零分配、关键帧采样快 48 倍
+- 诊断包补齐：/vmfashion diag 显示动画 / 发光层 / mixin 是否生效
+
+已知限制：官方签名公钥待后端生成替换；光影(Iris)兼容性、多人同屏帧率需真机验证。
+```
+
 ## 版本亮点模板（打 tag 时按 CHANGELOG 填）
 
 ```
@@ -73,8 +87,8 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 
 ## 检查清单（发布前）
 
-- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 187+ 单测）
-- [ ] `bash tools/verify/run.sh` 6 步全过
+- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 217 条单测）
+- [ ] `bash tools/verify/run.sh` 7 步全过
 - [ ] `bash tools/dev/check-jar.sh` / `check-mod-json.sh` / `check-lang.sh` 全过
 - [ ] `bash tools/dev/list-i18n-todo.sh --count` = 0
 - [ ] 版本号已 bump（`tools/dev/set-version.sh`），README 徽章、CHANGELOG 段落同步

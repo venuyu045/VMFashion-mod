@@ -3,7 +3,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.0.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
@@ -37,7 +37,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-0.2.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.0.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）

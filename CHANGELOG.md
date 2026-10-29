@@ -5,6 +5,17 @@
 
 ## [Unreleased]
 
+### 计划中
+
+- 官方签名公钥接入（后端生成密钥对 → 替换内置常量 → 官方后端开 `requireSignature`）
+- 内容审核流 / 举报 / 下架（后端）
+- 后端多 worker（Redis 或粘性会话）
+
+## [1.0.0] - 2026-10-29
+
+首个**可公开发布**版本（Modrinth 上架、陌生人敢装）。相对 0.2.0，补齐了 v1.0 清单上最后
+四块：后端 scale 链路、包签名验签、发布加固、诊断可观测性；并修复了一个能让玩家掉线的严重缺陷。
+
 ### 新增
 
 - **后端 `scale` 进数据链路**：provider 契约改为 `Map<UUID, Map<String, WornCosmetic>>`，
@@ -16,6 +27,10 @@
   默认**宽松模式**：未签名包放行、签名来自未知密钥也放行（只提示一次），只有"签名结构非法 /
   已知密钥但验不过"才拒绝 —— 这样后端开始签名不会打挂已有客户端。
 
+- **诊断包补齐**：`/vmfashion diag` 现在每件时装带 `anim=` / `emissive=` 状态，
+  并新增「渲染缓存 / mixin」段（已烘焙资源、动画实例数、`AvatarRenderStateMixin` 是否生效）；
+  `/vmfashion status` 增加一行渲染缓存。玩家遇到"时装不显示"能自助定位。
+
 ### 修复
 
 - **坏模型不再崩客户端**：渲染回调加顶层 `try/catch(Throwable)` + 按模型实例拉黑（reload 自愈），
@@ -25,10 +40,15 @@
 - 关键帧采样线性扫描 → 二分查找（上万关键帧时快 48 倍），并给单轨道关键帧数量加上限（防恶意 anim.json）。
 - 烘焙失败的重试间隔 30 秒 → 5 分钟（重试在渲染线程做 IO + 烘焙，太频繁会周期性卡帧）。
 
-### 计划中
+### 已知限制 / 待外部环境验证
 
-- 官方签名公钥（当前内置公钥是占位值，需后端生成后替换）
-- 光影（Iris）兼容性验证
+- **官方签名公钥**：内置公钥目前是占位值，真正的信任锚需后端用 `tools/dev/gen-signing-key.sh`
+  生成密钥对后替换常量（在此之前带签名的包按宽松模式放行）。
+- **光影（Iris）兼容性**：无 GL 环境，未验证。
+- **其他时装 mod 的注入顺序**：13 个 mixin 都是 `@Inject`（无 `@Shadow`），但未在装了同类 mod 的环境实测。
+- **多人同屏性能**：代码层面已做到热路径零分配，真实帧率需真机验证。
+- **动画子集**：不支持 molang / timeline / animation_controllers，catmullrom 按线性处理。
+- **第一人称**：手臂挂件仅空手时可见（原版行为）。
 
 ## [0.2.0] - 2026-10-29
 
@@ -92,12 +112,12 @@
 
 ### 工程化
 
-- **JUnit 5 单测**：82 条，覆盖包解析、元数据优先级、zip 安全解压、退避策略、分块、持久化、
-  资源 ID、错误体解析（纯逻辑，不加载 Minecraft 类）。
-- **无显卡自检扩到 4 步**：渲染链路 / 12 个 mixin 目标 / 缩放原点 / emissive 遮罩。
+- **JUnit 5 单测 164 条**：覆盖包解析、元数据优先级、zip 安全解压（32 个攻击样本）、退避策略、
+  分块、持久化、资源 ID、错误体解析、动画解析与采样（纯逻辑，不加载 Minecraft 类）。
+- **无显卡自检 6 步**：渲染链路 / 13 个 mixin 目标 / 缩放原点 / emissive 遮罩 / 动画骨骼名 / 第一人称坐标系。
 - **GitHub Actions**：push/PR 跑构建 + 测试 + 自检 + 语言文件一致性 + jar 结构检查；
   打 tag 自动发布 jar + sha256 + release notes。
-- 开发脚本：`tools/dev/check.sh`（2 秒编译检查）、`check-jar.sh`、`check-lang.sh`、
+- 开发脚本：`tools/dev/check.sh`（2 秒编译检查）、`check-jar.sh`、`check-mod-json.sh`、`check-lang.sh`、
   `list-i18n-todo.sh`、`set-version.sh`、`make-icon.py`。
 - 文档：`docs/pack-format.md`、`docs/architecture.md`、`docs/troubleshooting.md`、
   `docs/fashion-api.md`、`CONTRIBUTING.md`、`THIRD_PARTY_NOTICES.md`。
@@ -116,6 +136,7 @@
 - 内置示例时装包（`backboard` / `crown`），首次启动自动释放。
 - `tools/verify/` 无图形环境自检（几何 / 变换 / mixin 签名）。
 
-[Unreleased]: https://github.com/venuyu045/VMFashion-mod/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/venuyu045/VMFashion-mod/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/venuyu045/VMFashion-mod/compare/v0.2.0...v1.0.0
 [0.2.0]: https://github.com/venuyu045/VMFashion-mod/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/venuyu045/VMFashion-mod/releases/tag/v0.1.0
