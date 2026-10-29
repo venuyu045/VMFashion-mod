@@ -22,8 +22,18 @@ bash tools/verify/run.sh
 4. **X 轴镜像**：JSON 里的 +X 必须落在玩家左手边（GeckoLib 烘焙时会取反一次，这里要翻回来）；
 5. **attachedBone**：通过反射调用 `applyAttachment`，检查低头/转头时皇冠跟着动。
 
+脚本一共跑 4 步（渲染链路 / mixin 目标 / 缩放原点 / emissive 遮罩），任何一步失败都会退出非 0。
+
 `VerifyMixins.java`：解析每个 mixin 的 `@Mixin` / `@Inject`，用 ASM 检查目标类里
 确实存在对应 `name + descriptor` 的方法（26.x 不重映射，descriptor 必须完全一致）。
+
+`VerifyScale.java`：**缩放原点回归测试**。`scale` 必须绕 attachedBone 的 pivot 缩放，
+而不是绕脚底（皇冠在 `head` 上放大 2 倍应该停在 2.749 而不是飞到 4.25），
+同时校验 `scale=1` 时矩阵与旧行为逐位一致、低头时缩放仍绕 pivot。
+
+`VerifyEmissive.java`：**发光遮罩回归测试**。用 GeckoLib 烘焙两个立方体 + 一张只在左上角
+不透明的 emissive 贴图，断言只有贴到不透明区域的 quad 才进遮罩（6/0、0/6），
+全透明时遮罩为空（调用方整趟跳过 emissive pass），并顺带证明 GeckoLib 的 UV 是归一化的。
 
 > 注意：这套脚本验证的是"几何数据 + 变换矩阵 + mixin 目标"，
 > **不能**替代真机进游戏看画面。着色器/光照/渲染顺序只能在有 GL 的环境里确认。

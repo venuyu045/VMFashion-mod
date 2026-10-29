@@ -46,7 +46,23 @@ public final class CosmeticAssets {
     private static final GeckoLibGsonLoader LOADER = new GeckoLibGsonLoader();
 
     private static final Map<String, Entry> CACHE = new ConcurrentHashMap<>();
-    private static final Map<String, String> FAILURES = new ConcurrentHashMap<>();
+    /**
+     * 烘焙失败的记录（失败原因 + 时间戳）。
+     *
+     * <p>为什么要带时间戳：旧实现"失败一次永久拉黑"，玩家把包补好 / 重新下载完也永远不会重试，
+     * 只能重启游戏（开发路线图 §10 #16）。现在失败后 {@value #FAILURE_RETRY_MS} 毫秒允许重试一次，
+     * 既能挡住"每帧重试刷日志"，又能自愈。
+     */
+    private static final Map<String, Failure> FAILURES = new ConcurrentHashMap<>();
+    /** 失败后多久允许重试（毫秒）。取 30s：足够挡住每帧重试，玩家修好包也不用等太久。 */
+    private static final long FAILURE_RETRY_MS = 30_000L;
+
+    /** 一条失败记录。 */
+    private record Failure(String message, long atMillis) {
+        boolean coolingDown(long now) {
+            return now - atMillis < FAILURE_RETRY_MS;
+        }
+    }
     /** 由本模组注册的贴图 ID；reload 时必须主动释放，否则旧图一直占显存且新图不会生效。 */
     private static final java.util.Set<Identifier> REGISTERED_TEXTURES = ConcurrentHashMap.newKeySet();
     /** 贴图注册/上传串行化：TextureManager 的注册不是线程安全的，且同一 ID 不能重复上传。 */
@@ -74,15 +90,22 @@ public final class CosmeticAssets {
         if (cached != null) {
             return cached;
         }
-        if (FAILURES.containsKey(key)) {
-            return null;
+        long now = System.currentTimeMillis();
+        Failure failure = FAILURES.get(key);
+        if (failure != null) {
+            if (failure.coolingDown(now)) {
+                return null;
+            }
+            // 冷却期过了：允许再试一次（包可能刚被自动下发修好）
+            FAILURES.remove(key);
         }
         try {
             Entry loaded = load(definition);
             CACHE.put(key, loaded);
+            FAILURES.remove(key);
             return loaded;
         } catch (Throwable t) {
-            FAILURES.put(key, String.valueOf(t));
+            FAILURES.put(key, new Failure(String.valueOf(t), now));
             VMFashionClient.LOGGER.warn("时装 {} 的资源加载失败: {}", definition.id(), t.toString());
             return null;
         }
