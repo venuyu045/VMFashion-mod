@@ -176,6 +176,16 @@ public final class PackSignature {
     }
 
     /**
+     * "未知密钥"是否应当被拒绝。
+     *
+     * <p>规则：严格模式，或者信任库来自管理员显式配置（{@code builtinOnly=false}）时拒绝；
+     * 只有"纯内置占位公钥 + 宽松模式"才放行（见 {@link Decision#UNKNOWN_KEY} 的说明）。
+     */
+    static boolean rejectUnknownKey(TrustStore trust) {
+        return trust.requireSignature() || !trust.builtinOnly();
+    }
+
+    /**
      * 签名结构是否合法：标准 base64 且解码后正好 64 字节（Ed25519 签名的固定长度）。
      *
      * <p>只判结构，不做密码学校验 —— 结构非法说明签名被截断/替换过，直接拒绝；
@@ -213,9 +223,10 @@ public final class PackSignature {
         if (!trimmedKeyId.isEmpty()) {
             PublicKey key = trust.key(trimmedKeyId);
             if (key == null) {
-                // 声明了一个我们不认识的 keyId：宽松模式当作"未知密钥"放行（后端换了密钥/内置占位公钥），
-                // 严格模式必须拒绝
-                return trust.requireSignature() ? Decision.BAD_SIGNATURE : Decision.UNKNOWN_KEY;
+                // 声明了一个我们不认识的 keyId。只要信任库来自"管理员显式配置的真实公钥"（非内置占位）
+                // 或处于严格模式，未知密钥就必须拒绝 —— 否则攻陷的后端随便填个 keyId 就能绕过验签。
+                // 只有纯内置占位公钥的宽松模式才放行（否则官方后端一开始签名就会打挂所有客户端）。
+                return rejectUnknownKey(trust) ? Decision.BAD_SIGNATURE : Decision.UNKNOWN_KEY;
             }
             // 已知密钥却验不过 = 内容或签名被篡改
             return verify(key, packId, version, sha256Hex, signatureBase64)
@@ -227,7 +238,7 @@ public final class PackSignature {
             }
         }
         // 没给 keyId 且一把受信公钥都不匹配：同样是"未知密钥"而不是"被篡改"
-        return trust.requireSignature() ? Decision.BAD_SIGNATURE : Decision.UNKNOWN_KEY;
+        return rejectUnknownKey(trust) ? Decision.BAD_SIGNATURE : Decision.UNKNOWN_KEY;
     }
 
     // ==================== 公钥解析 ====================
@@ -342,14 +353,16 @@ public final class PackSignature {
          */
         public static TrustStore load(Path file, Consumer<String> logger) {
             if (file == null || !Files.isRegularFile(file)) {
+                // 完全没配 = 默认宽松（未签名的包照常装，只提示一次）
                 return builtin();
             }
             try {
                 String json = Files.readString(file, StandardCharsets.UTF_8);
                 JsonElement rootElement = JsonParser.parseString(json);
                 if (!rootElement.isJsonObject()) {
-                    log(logger, "trusted_keys.json 不是 JSON 对象，回退内置公钥");
-                    return builtin();
+                    log(logger, "trusted_keys.json 不是 JSON 对象：按配置错误处理，拒绝安装任何服务端包"
+                            + "（fail-closed）。删掉该文件即可恢复默认宽松模式");
+                    return failClosed(Map.of());
                 }
                 JsonObject root = rootElement.getAsJsonObject();
                 boolean require = optBoolean(root, "requireSignature", false);
@@ -372,15 +385,26 @@ public final class PackSignature {
                     }
                 }
                 if (keys.isEmpty()) {
-                    log(logger, "trusted_keys.json 没有可用公钥，回退内置公钥");
+                    if (require) {
+                        // 管理员明确要求强制验签，却没有可用公钥 → 绝不 fail-open，直接全拒
+                        log(logger, "trusted_keys.json 要求 requireSignature=true 但没有可用公钥："
+                                + "拒绝安装任何服务端包（fail-closed）");
+                        return failClosed(Map.of());
+                    }
+                    log(logger, "trusted_keys.json 没有可用公钥（且未要求强制验签），回退内置公钥");
                     return builtin();
                 }
                 log(logger, "已加载信任库：" + keys.size() + " 把公钥，requireSignature=" + require);
                 return new TrustStore(keys, require, false);
             } catch (Throwable t) {
-                log(logger, "读取 trusted_keys.json 失败（回退内置公钥）: " + t);
-                return builtin();
+                log(logger, "读取 trusted_keys.json 失败（按配置错误处理，拒绝安装任何服务端包，fail-closed）: " + t);
+                return failClosed(Map.of());
             }
+        }
+
+        /** 配置错误时的"全拒"信任库：没有可用密钥 + 强制验签 → 一切服务端包都不装（本地包不受影响）。 */
+        private static TrustStore failClosed(Map<String, PublicKey> keys) {
+            return new TrustStore(keys, true, false);
         }
 
         public boolean requireSignature() {

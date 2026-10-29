@@ -120,6 +120,19 @@ class PackCatalogTest {
     }
 
     @Test
+    void emptyStoreDoesNotWipeExistingCatalog() {
+        PackCatalog catalog = new PackCatalog(null);
+        catalog.store(Map.of("wings", new PackCatalog.PackInfo(
+                "wings", "1.0.0", VALID_SHA, 10L, "/packs/wings/1.0.0/download", 0L)), 1_000L);
+
+        // 后端瞬时异常返回空数组：不能把已缓存的清单清空
+        catalog.store(Map.of(), 2_000L);
+
+        assertNotNull(catalog.find("wings"), "空清单不应覆盖已有缓存");
+        assertEquals(1, catalog.packs().size());
+    }
+
+    @Test
     void findIsCaseInsensitive() {
         PackCatalog catalog = new PackCatalog(null);
         catalog.store(Map.of("wings", new PackCatalog.PackInfo(
@@ -207,6 +220,13 @@ class PackCatalogTest {
         assertFalse(PackCatalog.isSafePackId("C:evil"));
         assertFalse(PackCatalog.isSafePackId("with space"));
         assertFalse(PackCatalog.isSafePackId("x".repeat(65)), "超长 id 必须拒绝");
+        // 以 . 开头（尤其 .tmp-）会和 AssetSyncService 的临时目录前缀撞车，rescanDisk 会把它当
+        // 崩溃残留删掉 → 这个包永不持久。必须拒绝。
+        assertFalse(PackCatalog.isSafePackId(".tmp-abc"), ".tmp- 前缀必须拒绝");
+        assertFalse(PackCatalog.isSafePackId(".hidden"));
+        // server 是自动下发命名空间目录名
+        assertFalse(PackCatalog.isSafePackId("server"), "保留名 server 必须拒绝");
+        assertFalse(PackCatalog.isSafePackId("SERVER"));
     }
 
     // ==================== 签名（task-10） ====================

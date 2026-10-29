@@ -40,8 +40,16 @@ import java.util.function.BooleanSupplier;
  */
 public final class PackDownloader {
 
-    /** 单次 HTTP 请求超时（只覆盖到响应头；读流由调用方的整体超时兜底）。 */
+    /** 单次 HTTP 请求超时（只覆盖到响应头）。 */
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(30);
+    /**
+     * 读到完整 body 的硬超时（毫秒）。
+     *
+     * <p>为什么必须有：{@link #REQUEST_TIMEOUT} 只覆盖"拿到响应头"，后端/CDN 完全可以在返回 200 之后
+     * 卡住不发 body（或极慢滴流）。旧实现靠 {@code while(read>0)} 一直等，卡住的线程会占满下载线程池，
+     * 让整个自动下发停摆（发布前审查的严重项）。
+     */
+    private static final long BODY_TIMEOUT_MS = 120_000L;
     private static final int BUFFER_SIZE = 64 * 1024;
 
     /** 失败原因：上层据此决定"重试"还是"永久跳过"。 */
@@ -127,6 +135,23 @@ public final class PackDownloader {
     public CompletableFuture<DownloadResult> download(String url, String baseUrl, String token, Path targetFile,
                                                       String expectedSha256, long expectedBytes, long maxBytes,
                                                       BooleanSupplier aborted) {
+        return download(url, baseUrl, token, targetFile, expectedSha256, expectedBytes, maxBytes, aborted, null);
+    }
+
+    /**
+     * 下载并校验，额外把"正在读取的响应体流"交给 {@code streamTracker}。
+     *
+     * <p>为什么需要 {@code streamTracker}：body 卡住时 {@code InputStream#read} 会无限阻塞，
+     * 循环里的 deadline 检查根本轮不到执行。调用方（{@code AssetSyncService} 的看门狗）
+     * 需要在超时后**从另一个线程把这个流关掉**，才能让阻塞的 read 抛异常、释放线程。
+     * 本方法在开始读之前 {@code accept(in)}、读完之后 {@code accept(null)}。
+     *
+     * @param streamTracker 可为 {@code null}；参数是当前正在读的流（读完后传 {@code null}）
+     */
+    public CompletableFuture<DownloadResult> download(String url, String baseUrl, String token, Path targetFile,
+                                                      String expectedSha256, long expectedBytes, long maxBytes,
+                                                      BooleanSupplier aborted,
+                                                      java.util.function.Consumer<InputStream> streamTracker) {
         if (!HashUtil.isSha256Hex(expectedSha256)) {
             return CompletableFuture.failedFuture(new DownloadException(FailureReason.HASH_MISMATCH,
                     "清单里没有可信的 sha256，拒绝下载"));
@@ -164,10 +189,20 @@ public final class PackDownloader {
                         throw new CompletionException(new DownloadException(FailureReason.HTTP_ERROR, status,
                                 "下载失败: HTTP " + status));
                     }
-                    try (InputStream in = response.body()) {
-                        return writeVerified(in, targetFile, expectedSha256, expectedBytes, maxBytes, aborted);
+                    InputStream in = response.body();
+                    if (streamTracker != null) {
+                        // 交给调用方保管：body 卡住时它能从别的线程 close 这个流，解阻塞 read
+                        streamTracker.accept(in);
+                    }
+                    try (InputStream closeable = in) {
+                        return writeVerified(closeable, targetFile, expectedSha256, expectedBytes, maxBytes,
+                                aborted, System.nanoTime() + BODY_TIMEOUT_MS * 1_000_000L);
                     } catch (IOException e) {
                         throw new UncheckedIOException(e);
+                    } finally {
+                        if (streamTracker != null) {
+                            streamTracker.accept(null);
+                        }
                     }
                 }, executor)
                 .exceptionallyCompose(throwable -> {
@@ -196,6 +231,19 @@ public final class PackDownloader {
      */
     static DownloadResult writeVerified(InputStream rawInput, Path targetFile, String expectedSha256,
                                         long expectedBytes, long maxBytes, BooleanSupplier aborted) throws IOException {
+        // 单测/直接调用：默认给一个很宽裕的 deadline（正常数据瞬间读完，不会触发）
+        return writeVerified(rawInput, targetFile, expectedSha256, expectedBytes, maxBytes, aborted,
+                System.nanoTime() + BODY_TIMEOUT_MS * 1_000_000L);
+    }
+
+    /**
+     * 带绝对 deadline 的写入校验。
+     *
+     * @param deadlineNanos 读超时的绝对时间点（{@link System#nanoTime()}）；{@code <= 0} 表示不限制
+     */
+    static DownloadResult writeVerified(InputStream rawInput, Path targetFile, String expectedSha256,
+                                        long expectedBytes, long maxBytes, BooleanSupplier aborted,
+                                        long deadlineNanos) throws IOException {
         if (rawInput == null || targetFile == null) {
             throw new IllegalArgumentException("rawInput / targetFile 不能为 null");
         }
@@ -219,6 +267,11 @@ public final class PackDownloader {
             while ((read = in.read(buffer)) > 0) {
                 if (aborted != null && aborted.getAsBoolean()) {
                     throw new DownloadException(FailureReason.ABORTED, "下载已取消");
+                }
+                if (deadlineNanos > 0 && System.nanoTime() > deadlineNanos) {
+                    // 慢速滴流：每次 read 都返回了，但总量拖过 deadline → 判超时（卡死的那种由外部 close 流处理）
+                    throw new DownloadException(FailureReason.IO, "下载超时（读取超过 "
+                            + (BODY_TIMEOUT_MS / 1000) + " 秒）");
                 }
                 written += read;
                 if (maxBytes > 0 && written > maxBytes) {

@@ -243,11 +243,15 @@ public final class LoadoutService {
         }
         CosmeticDefinition cached = resolved.get(id);
         if (cached != null) {
+            // 命中也要告诉资产层"这件还在用"：否则正在穿的老包会被当成最久未用淘汰掉，
+            // 导致正在显示的时装被删、下一帧重新下载（闪现/抖动）。纯内存操作，60s 内不重复落盘。
+            markUsedQuietly(id);
             return cached;
         }
         CosmeticDefinition definition = CosmeticRegistry.getInstance().find(id);
         if (definition != null) {
             resolved.put(id, definition);
+            markUsedQuietly(id);
             return definition;
         }
         // 本地解析不到：可能是"别人穿了服务端下发的包，而我没装"。请求资产下发，
@@ -278,6 +282,15 @@ public final class LoadoutService {
         } catch (Throwable t) {
             // 资产下发层还没接好 / 正在重载，都不该让渲染崩
             VMFashionClient.LOGGER.debug("请求资产下发失败 {}: {}", id, t.toString());
+        }
+    }
+
+    /** 通知资产层"这件时装刚被用到"（失败绝不影响渲染）。 */
+    private static void markUsedQuietly(String id) {
+        try {
+            com.venus.vmfashion.sync.AssetSyncService.getInstance().markUsed(id);
+        } catch (Throwable ignored) {
+            // 资产层未初始化 / 正在重载：忽略，渲染优先
         }
     }
 

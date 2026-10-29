@@ -78,22 +78,28 @@ class PackSignaturePolicyTest {
     }
 
     @Test
-    void unknownKeyIsAllowedInLenientModeButRejectedInStrictMode() throws Exception {
-        KeyPair real = newKeyPair();
+    void unknownKeyAllowedOnlyWithBuiltinPlaceholder() throws Exception {
         KeyPair other = newKeyPair();
         String signature = sign(other, PACK_ID, VERSION, SHA);
 
-        PackSignature.TrustStore lenient = trustFile("k1", real, false);
+        // 纯内置占位公钥 + 宽松模式：未知密钥放行（否则官方后端一开始签名就全网装不上）
+        PackSignature.TrustStore builtin = PackSignature.TrustStore.builtin();
         PackSignature.Decision allowed = PackSignature.evaluate(
-                lenient, PACK_ID, VERSION, SHA, signature, "some-unknown-key");
+                builtin, PACK_ID, VERSION, SHA, signature, "some-unknown-key");
         assertEquals(PackSignature.Decision.UNKNOWN_KEY, allowed);
-        assertTrue(allowed.allowed(), "宽松模式下未知密钥必须放行，否则后端一开始签名就全网装不上");
+        assertTrue(allowed.allowed());
 
+        // 一旦管理员配置了真实公钥（非 builtin），即便宽松模式，未知密钥也必须拒绝，
+        // 否则被攻陷的后端随便填个 keyId 就能绕过验签
+        KeyPair real = newKeyPair();
+        PackSignature.TrustStore configured = trustFile("k1", real, false);
+        assertEquals(PackSignature.Decision.BAD_SIGNATURE, PackSignature.evaluate(
+                configured, PACK_ID, VERSION, SHA, signature, "some-unknown-key"));
+
+        // 严格模式当然拒绝
         PackSignature.TrustStore strict = trustFile("k1", real, true);
-        PackSignature.Decision rejected = PackSignature.evaluate(
-                strict, PACK_ID, VERSION, SHA, signature, "some-unknown-key");
-        assertEquals(PackSignature.Decision.BAD_SIGNATURE, rejected);
-        assertFalse(rejected.allowed());
+        assertEquals(PackSignature.Decision.BAD_SIGNATURE, PackSignature.evaluate(
+                strict, PACK_ID, VERSION, SHA, signature, "some-unknown-key"));
     }
 
     @Test
@@ -102,7 +108,8 @@ class PackSignaturePolicyTest {
         KeyPair other = newKeyPair();
         String signature = sign(other, PACK_ID, VERSION, SHA);
 
-        assertEquals(PackSignature.Decision.UNKNOWN_KEY, PackSignature.evaluate(
+        // 配置了真实公钥时（非 builtin），没给 keyId 且无匹配 → 拒绝（宽松模式也一样）
+        assertEquals(PackSignature.Decision.BAD_SIGNATURE, PackSignature.evaluate(
                 trustFile("k1", real, false), PACK_ID, VERSION, SHA, signature, null));
         assertEquals(PackSignature.Decision.BAD_SIGNATURE, PackSignature.evaluate(
                 trustFile("k1", real, true), PACK_ID, VERSION, SHA, signature, null));
@@ -154,6 +161,41 @@ class PackSignaturePolicyTest {
         PackSignature.TrustStore strict = PackSignature.TrustStore.of(Map.of("k1", pair.getPublic()), true);
         assertEquals(PackSignature.Decision.UNSIGNED_REJECTED,
                 PackSignature.evaluate(strict, PACK_ID, VERSION, SHA, null, null));
+    }
+
+    @Test
+    void requireSignatureTrueButNoUsableKeysFailsClosed() throws Exception {
+        // 管理员写了 requireSignature:true 但公钥写错 → 绝不能 fail-open 成宽松模式
+        Path file = tempDir.resolve(PackSignature.TRUST_FILE_NAME);
+        Files.writeString(file, "{\"requireSignature\": true, \"keys\": [{\"id\": \"k\", "
+                + "\"publicKey\": \"not-a-valid-key\"}]}", StandardCharsets.UTF_8);
+        PackSignature.TrustStore trust = PackSignature.TrustStore.load(file, m -> { });
+        assertTrue(trust.requireSignature(), "配置错误时仍必须保留 requireSignature=true（fail-closed）");
+        assertEquals(PackSignature.Decision.UNSIGNED_REJECTED,
+                PackSignature.evaluate(trust, PACK_ID, VERSION, SHA, null, null));
+    }
+
+    @Test
+    void corruptTrustFileFailsClosed() throws Exception {
+        Path file = tempDir.resolve(PackSignature.TRUST_FILE_NAME);
+        Files.writeString(file, "{ this is not json", StandardCharsets.UTF_8);
+        PackSignature.TrustStore trust = PackSignature.TrustStore.load(file, m -> { });
+        assertTrue(trust.requireSignature(), "坏掉的信任库文件应按配置错误 fail-closed");
+        assertEquals(PackSignature.Decision.UNSIGNED_REJECTED,
+                PackSignature.evaluate(trust, PACK_ID, VERSION, SHA, null, null));
+    }
+
+    @Test
+    void unknownKeyIsRejectedWhenRealKeysConfiguredEvenIfLenient() throws Exception {
+        KeyPair real = newKeyPair();
+        KeyPair other = newKeyPair();
+        String signature = sign(other, PACK_ID, VERSION, SHA);
+        // requireSignature=false，但管理员配置了真实公钥 → 未知密钥仍应拒绝（否则签名形同虚设）
+        PackSignature.TrustStore trust = trustFile("k1", real, false);
+        PackSignature.Decision decision = PackSignature.evaluate(
+                trust, PACK_ID, VERSION, SHA, signature, "someone-elses-key");
+        assertEquals(PackSignature.Decision.BAD_SIGNATURE, decision);
+        assertFalse(decision.allowed());
     }
 
     @Test

@@ -212,9 +212,9 @@ class PackSignatureTest {
         // 没给 keyId 时用任意受信公钥尝试
         assertEquals(PackSignature.Decision.SIGNED_OK,
                 PackSignature.evaluate(store, PACK_ID, VERSION, SHA, signature, null));
-        // 未知 keyId → 宽松模式放行但标记为 UNKNOWN_KEY（策略变更见 PackSignaturePolicyTest：
-        // 内置公钥是占位值，若这里直接拒绝，后端一开始签名就会让所有 v1.0 客户端装不上包）
-        assertEquals(PackSignature.Decision.UNKNOWN_KEY,
+        // 未知 keyId：这里 store 用 TrustStore.of(...) 配置了真实公钥（builtinOnly=false），
+        // 按策略必须拒绝（否则被攻陷的后端随便填 keyId 就能绕过验签）
+        assertEquals(PackSignature.Decision.BAD_SIGNATURE,
                 PackSignature.evaluate(store, PACK_ID, VERSION, SHA, signature, "unknown-key"));
         // 严格模式下必须拒绝
         assertEquals(PackSignature.Decision.BAD_SIGNATURE,
@@ -281,26 +281,27 @@ class PackSignatureTest {
     }
 
     @Test
-    void missingOrBrokenTrustFileFallsBackToBuiltinLoose() throws Exception {
+    void missingTrustFileIsLenientButBrokenOrEmptyStrictFailsClosed() throws Exception {
+        // 完全没配 → 默认宽松（内置占位公钥），未签名包照常装
         PackSignature.TrustStore missing = PackSignature.TrustStore.load(tempDir.resolve("nope.json"), null);
         assertTrue(missing.builtinOnly());
         assertFalse(missing.requireSignature());
         assertEquals(1, missing.size());
+        assertTrue(PackSignature.TrustStore.load(null, null).builtinOnly());
 
+        // 文件存在但 JSON 坏了 = 配置错误 → fail-closed（绝不静默 fail-open 放行伪造签名）
         Path broken = tempDir.resolve("broken.json");
         Files.writeString(broken, "{ this is not json");
         PackSignature.TrustStore fromBroken = PackSignature.TrustStore.load(broken, null);
-        assertTrue(fromBroken.builtinOnly());
-        assertFalse(fromBroken.requireSignature());
+        assertTrue(fromBroken.requireSignature(), "坏信任库必须 fail-closed");
+        assertEquals(0, fromBroken.size());
 
+        // 要求 requireSignature 却没有可用公钥 → fail-closed（全拒），不能退回宽松模式
         Path emptyKeys = tempDir.resolve("empty.json");
         Files.writeString(emptyKeys, "{\"requireSignature\":true,\"keys\":[]}");
         PackSignature.TrustStore fromEmpty = PackSignature.TrustStore.load(emptyKeys, null);
-        assertTrue(fromEmpty.builtinOnly());
-        assertFalse(fromEmpty.requireSignature(), "没有可用公钥时不能进入严格模式（否则谁都装不上）");
-
-        // null 路径也不能炸
-        assertTrue(PackSignature.TrustStore.load(null, null).builtinOnly());
+        assertTrue(fromEmpty.requireSignature(), "requireSignature=true 且无公钥必须 fail-closed");
+        assertEquals(0, fromEmpty.size());
     }
 
     @Test

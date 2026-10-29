@@ -119,6 +119,17 @@ public final class AssetSyncService {
     private final Queue<String> queue = new ConcurrentLinkedQueue<>();
     /** 正在下载/解压的 packId（小写）。 */
     private final Set<String> inFlight = ConcurrentHashMap.newKeySet();
+    /** 每个 in-flight packId 的起始时间戳，看门狗据此判断"卡太久"。 */
+    private final Map<String, Long> inFlightSince = new ConcurrentHashMap<>();
+    /**
+     * 正在读取的响应体流（packId → InputStream）。
+     *
+     * <p>用于看门狗：body 卡住时 {@code read} 会无限阻塞，只能从另一个线程 {@code close} 这个流
+     * 来解阻塞。{@link PackDownloader} 在读之前把流登记进来、读完后移除。
+     */
+    private final Map<String, java.io.InputStream> activeStreams = new ConcurrentHashMap<>();
+    /** 单次安装（下载 + 解压 + 落盘）的硬超时；超过就由看门狗强拆，避免永久占线程。 */
+    private static final long INSTALL_TIMEOUT_MS = 5 * 60 * 1000L;
     /** 已安装的服务端包（小写 packId → 元数据）。 */
     private final Map<String, InstalledPack> installed = new ConcurrentHashMap<>();
     /** 用户自己装的包（小写 packId）：存在时永不下载/覆盖。 */
@@ -251,6 +262,46 @@ public final class AssetSyncService {
         refreshCatalogIfDue(false);
         touchRecentlyUsedIfDue();
         evictIfOverBudget();
+        sweepStuckInstalls();
+    }
+
+    /**
+     * 看门狗：清理卡太久的 in-flight 安装。
+     *
+     * <p>为什么必须有：body 读取可能永久阻塞（后端返回 200 头却不发 body）。那种线程不会自己退出，
+     * 会一直占着下载线程池，最终让整个自动下发停摆。这里做两件事：
+     * <ol>
+     *   <li>把该 key 正在读的流 {@code close} 掉 —— 阻塞的 {@code read} 会立刻抛异常、线程得以释放；</li>
+     *   <li>把 key 从 inFlight/queued 摘掉并设冷却 —— 保证队列能继续前进、{@code pendingCount} 不会卡死。</li>
+     * </ol>
+     */
+    private void sweepStuckInstalls() {
+        if (inFlightSince.isEmpty()) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, Long> entry : inFlightSince.entrySet()) {
+            String key = entry.getKey();
+            Long since = entry.getValue();
+            if (since == null || now - since < INSTALL_TIMEOUT_MS) {
+                continue;
+            }
+            inFlightSince.remove(key);
+            java.io.InputStream stream = activeStreams.remove(key);
+            if (stream != null) {
+                try {
+                    stream.close(); // 解阻塞正在 read 的线程
+                } catch (Throwable ignored) {
+                    // 关不掉也无所谓，马上要把它踢出队列
+                }
+            }
+            if (inFlight.remove(key)) {
+                queued.remove(key);
+                failedUntil.put(key, now + FAILED_RETRY_MS);
+                VMFashionClient.LOGGER.warn("时装包 {} 安装超时（{} 分钟），已强制中止并稍后重试",
+                        key, INSTALL_TIMEOUT_MS / 60_000L);
+            }
+        }
     }
 
     /** 进服：刷新 catalog，并预取自己穿戴涉及的包。 */
@@ -258,6 +309,8 @@ public final class AssetSyncService {
         if (!enabled) {
             return;
         }
+        // 换服后同名 packId 的包可能是另一个服务器的（且合格）：清掉本会话的验签拒绝记录重新评估
+        rejectedBySignature.clear();
         // 玩家可能刚手动装了包（用户包优先），进服重扫一次
         rescanDisk();
         Map<String, String> worn = LocalLoadout.getInstance().snapshot();
@@ -275,6 +328,21 @@ public final class AssetSyncService {
         queued.clear();
         failedUntil.clear();
         catalogMisses.clear();
+        abortActiveStreams();
+    }
+
+    /** 把所有正在读的响应体流关掉（离服 / 清缓存时立刻中止在飞下载，而不是等它读完）。 */
+    private void abortActiveStreams() {
+        for (java.io.InputStream stream : activeStreams.values()) {
+            if (stream != null) {
+                try {
+                    stream.close();
+                } catch (Throwable ignored) {
+                    // 忽略
+                }
+            }
+        }
+        activeStreams.clear();
     }
 
     // ==================== 渲染层入口（热路径） ====================
@@ -319,6 +387,30 @@ public final class AssetSyncService {
         queue.add(key);
     }
 
+    /**
+     * 标记某件时装"刚被渲染用到过"，用于 LRU 淘汰。
+     *
+     * <p>为什么需要：{@code LoadoutService.resolve()} 解析成功后会直接返回缓存，不会走
+     * {@link #requestMissing}，所以"正在穿的老包"的最近使用时间不会推进 —— 缓存超限时会被
+     * 当成最久未用淘汰掉，导致正在显示的时装被删、下一帧重新下载（闪现/抖动）。
+     * 这里是纯内存操作（渲染线程安全），只在 60 秒节流后真正落盘。
+     *
+     * @param cosmeticId 形如 {@code packId:localId}；非法 / 本地包直接忽略
+     */
+    public void markUsed(String cosmeticId) {
+        if (!enabled || cosmeticId == null || cosmeticId.isBlank()) {
+            return;
+        }
+        int colon = cosmeticId.indexOf(':');
+        if (colon <= 0) {
+            return;
+        }
+        String key = cosmeticId.substring(0, colon).trim().toLowerCase(Locale.ROOT);
+        if (!key.isEmpty() && installed.containsKey(key)) {
+            recentlyUsed.add(key);
+        }
+    }
+
     // ==================== 状态 / 缓存管理 ====================
 
     /** 清空服务端下发的包缓存（{@code /vmfashion cache clear}）。 */
@@ -329,6 +421,7 @@ public final class AssetSyncService {
         failedUntil.clear();
         catalogMisses.clear();
         recentlyUsed.clear();
+        abortActiveStreams();
         // 用户显式清了缓存：给之前验签失败的包一次重新验证的机会
         rejectedBySignature.clear();
         int removed = 0;
@@ -476,11 +569,40 @@ public final class AssetSyncService {
             Files.createDirectories(tempDir);
 
             Path zip = tempDir.resolve("pack.zip");
-            PackDownloader.DownloadResult download = currentDownloader.download(
-                            info.url(), currentConfig.getApiBaseUrl(), currentToken(), zip,
-                            info.sha256(), info.bytes(), SafeZip.Limits.defaults().maxArchiveBytes(),
-                            () -> submittedEpoch != epoch)
-                    .join(); // worker 线程阻塞等待是安全的
+            inFlightSince.put(key, System.currentTimeMillis());
+            CompletableFuture<PackDownloader.DownloadResult> future = currentDownloader.download(
+                    info.url(), currentConfig.getApiBaseUrl(), currentToken(), zip,
+                    info.sha256(), info.bytes(), SafeZip.Limits.defaults().maxArchiveBytes(),
+                    () -> submittedEpoch != epoch,
+                    stream -> {
+                        // 登记 / 注销正在读的流：看门狗靠 close 它来解阻塞永久 read
+                        if (stream == null) {
+                            activeStreams.remove(key);
+                        } else {
+                            activeStreams.put(key, stream);
+                        }
+                    });
+            PackDownloader.DownloadResult download;
+            try {
+                // worker 线程阻塞等待是安全的，但必须带超时：否则 body 卡住时这里永远返回不了。
+                // 超时后 finally 会删临时目录，看门狗负责释放 inFlight。
+                download = future.get(INSTALL_TIMEOUT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (java.util.concurrent.TimeoutException timeout) {
+                throw new PackDownloader.DownloadException(PackDownloader.FailureReason.IO,
+                        "下载超过 " + (INSTALL_TIMEOUT_MS / 60_000L) + " 分钟未完成");
+            } catch (java.util.concurrent.ExecutionException execution) {
+                Throwable cause = execution.getCause() == null ? execution : execution.getCause();
+                if (cause instanceof RuntimeException runtime) {
+                    throw runtime;
+                }
+                if (cause instanceof java.io.IOException io) {
+                    throw io;
+                }
+                throw new PackDownloader.DownloadException(PackDownloader.FailureReason.IO,
+                        cause.getMessage() == null ? "下载失败" : cause.getMessage());
+            } finally {
+                activeStreams.remove(key);
+            }
             if (submittedEpoch != epoch) {
                 return;
             }
@@ -520,7 +642,14 @@ public final class AssetSyncService {
 
             long now = System.currentTimeMillis();
             long bytes = extraction.totalBytes();
-            writeMarker(target, info, download.sha256(), bytes, now);
+            try {
+                writeMarker(target, info, download.sha256(), bytes, now);
+            } catch (Throwable markerFailure) {
+                // 目录已经移到位但 marker 写失败：如果就这么返回，installed 不登记、重试时又会因为
+                // "目录已存在"被跳过 → 本会话这件时装永远不显示。所以回滚掉这个半成品目录。
+                deleteRecursively(target);
+                throw markerFailure;
+            }
             installed.put(key, new InstalledPack(info.id(), info.version(), download.sha256(), bytes, now, now));
             cachedBytes.addAndGet(bytes);
             recentlyUsed.add(key);
@@ -532,10 +661,21 @@ public final class AssetSyncService {
         } catch (Throwable t) {
             Throwable cause = t instanceof java.util.concurrent.CompletionException && t.getCause() != null
                     ? t.getCause() : t;
+            boolean aborted = submittedEpoch != epoch
+                    || (cause instanceof PackDownloader.DownloadException de
+                            && de.reason() == PackDownloader.FailureReason.ABORTED);
+            if (aborted) {
+                // 玩家离服 / 清了缓存导致的取消：不是失败，绝不能设冷却（否则重进服后
+                // 这些包会在 10 分钟内不再下发，时装"消失 10 分钟"）
+                VMFashionClient.LOGGER.debug("下发时装包 {} 已取消（换服/清缓存）", packId);
+                return;
+            }
             failedUntil.put(key, System.currentTimeMillis() + FAILED_RETRY_MS);
             VMFashionClient.LOGGER.warn("下发时装包 {} 失败（{} 分钟后再试）: {}",
                     packId, FAILED_RETRY_MS / 60_000L, cause.toString());
         } finally {
+            inFlightSince.remove(key);
+            activeStreams.remove(key);
             if (tempDir != null) {
                 deleteRecursively(tempDir);
             }
@@ -703,6 +843,22 @@ public final class AssetSyncService {
         return new InstalledPack(fallbackId, "", "", size, modified, modified);
     }
 
+    /**
+     * 只更新 marker 里已有的 JSON 字段的 {@code lastUsedAt}（保留其它字段原样）。
+     *
+     * <p>失败不影响功能（LRU 精度略降），所以只吞异常。
+     */
+    private static void rewriteMarkerLastUsed(Path marker, long lastUsedAt) throws IOException {
+        try {
+            String text = Files.readString(marker, StandardCharsets.UTF_8);
+            JsonObject object = JsonParser.parseString(text).getAsJsonObject();
+            object.addProperty("lastUsedAt", lastUsedAt);
+            Files.writeString(marker, object.toString(), StandardCharsets.UTF_8);
+        } catch (RuntimeException e) {
+            // JSON 坏掉：不影响包可用性，忽略
+        }
+    }
+
     private static void writeMarker(Path packDir, PackCatalog.PackInfo info, String sha256,
                                     long bytes, long now) throws IOException {
         JsonObject marker = new JsonObject();
@@ -750,6 +906,9 @@ public final class AssetSyncService {
                 try {
                     if (Files.isRegularFile(marker)) {
                         Files.setLastModifiedTime(marker, FileTime.fromMillis(now));
+                        // 关键：readMarker 优先读 JSON 里的 lastUsedAt，只刷 mtime 的话
+                        // 跨重启 LRU 顺序会退回安装时间。这里把 JSON 的 lastUsedAt 也更新掉。
+                        rewriteMarkerLastUsed(marker, now);
                     }
                 } catch (IOException ignored) {
                     // 刷时间戳失败只影响 LRU 精度，不影响功能

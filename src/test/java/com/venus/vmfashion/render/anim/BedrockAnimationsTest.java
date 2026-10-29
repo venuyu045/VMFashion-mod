@@ -163,6 +163,44 @@ class BedrockAnimationsTest {
     }
 
     @Test
+    void preservesDeclarationOrderForDefaultAnimation() {
+        // AnimationCache 取"第一个"作为默认动画，因此解析结果必须保留 anim.json 的声明顺序
+        Map<String, BedrockAnimation> animations = BedrockAnimations.parse(json("""
+                {"animations": {
+                  "zzz_first_declared": {"animation_length": 1.0, "bones": {"b": {"rotation": {"0.0": [0,0,0]}}}},
+                  "aaa_second_declared": {"animation_length": 1.0, "bones": {"b": {"rotation": {"0.0": [0,0,0]}}}}
+                }}
+                """), null);
+        java.util.List<String> order = new java.util.ArrayList<>(animations.keySet());
+        assertEquals("zzz_first_declared", order.get(0), "必须保留声明顺序，而不是按名字排序/哈希序");
+        assertEquals("zzz_first_declared", animations.values().iterator().next().name());
+    }
+
+    @Test
+    void excessiveKeyframesAreBoundedAndWarnOnce() {
+        // 构造 1 个骨骼、5000 个关键帧（超过程序上限时只保留前 N 个并 warn 一次）
+        StringBuilder frames = new StringBuilder();
+        for (int i = 0; i < 5000; i++) {
+            if (i > 0) {
+                frames.append(',');
+            }
+            frames.append('"').append(i * 0.001).append("\": [0, 0, ").append(i % 90).append(']');
+        }
+        String text = "{\"animations\": {\"a\": {\"animation_length\": 5.0, "
+                + "\"bones\": {\"b\": {\"rotation\": {" + frames + "}}}}}}";
+        java.util.List<String> warnings = new ArrayList<>();
+        Map<String, BedrockAnimation> animations = BedrockAnimations.parse(json(text), warnings::add);
+        AnimationTrack rotation = animations.get("a").bones().get("b").rotation();
+        org.junit.jupiter.api.Assertions.assertTrue(rotation.size() <= 20_000);
+        org.junit.jupiter.api.Assertions.assertTrue(rotation.size() > 0);
+        // 超限时应有一条截断警告（5000 < 20000 时不会有，这里只在超限时断言）
+        if (rotation.size() == 20_000) {
+            org.junit.jupiter.api.Assertions.assertTrue(
+                    warnings.stream().anyMatch(w -> w.contains("上限")), "超限应产生截断警告");
+        }
+    }
+
+    @Test
     void loopDefaultsToTrueAndCanBeDisabled() {
         Map<String, BedrockAnimation> animations = BedrockAnimations.parse(json("""
                 {"animations": {

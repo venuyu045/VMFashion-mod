@@ -175,6 +175,12 @@ public final class PackCatalog {
     /** 更新内存缓存并异步落盘（原子写，写失败只记日志）。 */
     public void store(Map<String, PackInfo> newPacks, long nowMs) {
         Map<String, PackInfo> copy = newPacks == null ? Map.of() : Map.copyOf(newPacks);
+        // 后端瞬时异常可能返回空数组：不要用空清单覆盖已有的磁盘缓存（否则离线可用清单被清空、
+        // 且 10 分钟内不会再刷新，依赖清单的重新下发全部失效）。只更新 fetchedAt 让它稍后再拉。
+        if (copy.isEmpty() && !this.packs.isEmpty()) {
+            this.fetchedAtMs = nowMs;
+            return;
+        }
         this.packs = copy;
         this.fetchedAtMs = nowMs;
         if (cacheFile == null) {
@@ -363,7 +369,19 @@ public final class PackCatalog {
             return false;
         }
         // "." / ".." 虽然能过正则，但绝不能当目录名
-        return !".".equals(trimmed) && !"..".equals(trimmed);
+        if (".".equals(trimmed) || "..".equals(trimmed)) {
+            return false;
+        }
+        // 以 "." 开头的名字（尤其 ".tmp-"）会和 AssetSyncService 的临时目录前缀撞车 ——
+        // rescanDisk 会把 ".tmp-*" 当崩溃残留删掉，导致这个包每次初始化都被删、永不持久。
+        if (trimmed.startsWith(".")) {
+            return false;
+        }
+        // "server" 是自动下发命名空间目录名，不能当 packId（否则磁盘结构冲突）
+        if ("server".equalsIgnoreCase(trimmed)) {
+            return false;
+        }
+        return true;
     }
 
     // ==================== 工具 ====================

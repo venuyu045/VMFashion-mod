@@ -5,6 +5,7 @@ import com.venus.vmfashion.render.CosmeticAssets;
 
 import java.util.Iterator;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -18,6 +19,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code frameFor} 在渲染热路径上（每帧 × 每玩家 × 每件时装），拼 key 会**每帧分配一个 String**，
  * 违反"热路径零分配"。两层 Map 用已有的 {@link UUID} 和 {@code definition.id()} 直接查，零分配。
  *
+ * <p><b>负缓存</b>：{@code anim.json} 里有动画、但动画里的骨骼名与模型骨骼对不上时，
+ * {@link AnimationFrame#create} 会返回 {@code null}。如果不记住这个结果，{@code frameFor}
+ * 每帧都会重新 {@code new AnimationFrame}（建 HashMap + 递归遍历全模型骨骼）再丢弃 ——
+ * 一个坏包就能让渲染线程每帧白跑一遍并持续产生垃圾。所以"有动画但建不出帧"也缓存下来（负结果）。
+ *
  * <p>线程约束：只在渲染线程调用（{@code CosmeticRenderDispatcher} / {@code FirstPersonRenderer}）。
  * 用并发容器只是为了 {@code invalidate()} 可能从主线程进来时不至于撕裂。
  */
@@ -28,10 +34,17 @@ public final class AnimationCache {
     /** 表里总条目超过这个值时触发一次清理（避免每次插入都遍历）。 */
     private static final int PRUNE_THRESHOLD = 128;
 
-    /** 玩家 → （时装 ID → 动画帧）。 */
-    private static final Map<UUID, Map<String, AnimationFrame>> FRAMES = new ConcurrentHashMap<>();
+    /** 玩家 → 该玩家身上各时装的动画状态。 */
+    private static final Map<UUID, PerPlayer> FRAMES = new ConcurrentHashMap<>();
 
     private AnimationCache() {
+    }
+
+    /** 单个玩家的缓存：正常帧 + "有动画但建不出帧"的负结果（避免每帧重建）。 */
+    private static final class PerPlayer {
+        final Map<String, AnimationFrame> frames = new ConcurrentHashMap<>();
+        /** 负缓存：这些时装 ID 的动画状态创建失败，本代直接按静态模型渲染。 */
+        final Set<String> negatives = ConcurrentHashMap.newKeySet();
     }
 
     /**
@@ -47,40 +60,62 @@ public final class AnimationCache {
         if (uuid == null || definition == null || entry == null || entry.animations().isEmpty()) {
             return null;
         }
-        Map<String, AnimationFrame> perPlayer = FRAMES.get(uuid);
+        String cosmeticId = definition.id();
+        PerPlayer perPlayer = FRAMES.get(uuid);
         if (perPlayer != null) {
-            AnimationFrame cached = perPlayer.get(definition.id());
+            AnimationFrame cached = perPlayer.frames.get(cosmeticId);
             if (cached != null) {
                 return cached;
             }
+            if (perPlayer.negatives.contains(cosmeticId)) {
+                // 负缓存命中：明确按静态模型渲染，不再重建（这是防止坏包每帧重建的关键）
+                return null;
+            }
         }
-        // 一件时装可能有多个动画：默认播第一个（按 anim.json 里的声明顺序），
+        // 一件时装可能有多个动画：默认播第一个（按 anim.json 的声明顺序 —— 解析端用 LinkedHashMap 保序），
         // 想指定具体动画可以用 pack.json 的 "animation" 字段指向某个文件（文件名即动画名的一部分）。
         BedrockAnimation animation = entry.animations().values().iterator().next();
         try {
             AnimationFrame frame = AnimationFrame.create(entry.model(), animation);
+            PerPlayer target = perPlayer;
+            if (target == null) {
+                PerPlayer created = new PerPlayer();
+                PerPlayer existing = FRAMES.putIfAbsent(uuid, created);
+                target = existing != null ? existing : created;
+            }
             if (frame == null) {
+                // 负缓存：骨骼名对不上模型之类的坏包，只尝试一次
+                target.negatives.add(cosmeticId);
+                if (totalSize() > PRUNE_THRESHOLD) {
+                    prune();
+                }
                 return null;
             }
-            Map<String, AnimationFrame> target = perPlayer;
-            if (target == null) {
-                target = new ConcurrentHashMap<>();
-                Map<String, AnimationFrame> existing = FRAMES.putIfAbsent(uuid, target);
-                if (existing != null) {
-                    target = existing;
-                }
-            }
-            target.put(definition.id(), frame);
+            target.frames.put(cosmeticId, frame);
+            target.negatives.remove(cosmeticId);
             if (totalSize() > PRUNE_THRESHOLD) {
                 prune();
             }
             return frame;
         } catch (Throwable t) {
-            // 渲染回调里抛异常会崩客户端：动画状态建不起来就退化成静态模型
+            // 渲染回调里抛异常会崩客户端：动画状态建不起来就退化成静态模型（并记负缓存，避免每帧重试）
+            if (perPlayer != null) {
+                perPlayer.negatives.add(cosmeticId);
+            }
             VMFashionClient.LOGGER.warn("时装 {} 的动画状态创建失败，按静态模型渲染: {}",
                     definition.id(), t.toString());
             return null;
         }
+    }
+
+    /**
+     * 是否需要尝试创建动画帧（抽出来单测，避免单测依赖 Minecraft 类）。
+     *
+     * @param hasCachedFrame 已经有缓存的帧
+     * @param knownNegative  已知"建不出帧"（负缓存命中）
+     */
+    static boolean needsCreation(boolean hasCachedFrame, boolean knownNegative) {
+        return !hasCachedFrame && !knownNegative;
     }
 
     /** 清空（{@code /vmfashion reload} / 资源重载时调用）。 */
@@ -93,25 +128,34 @@ public final class AnimationCache {
         return totalSize();
     }
 
+    /** 当前负缓存条目数（诊断 / 单测用）。 */
+    public static int negativeCount() {
+        int total = 0;
+        for (PerPlayer perPlayer : FRAMES.values()) {
+            total += perPlayer.negatives.size();
+        }
+        return total;
+    }
+
     private static int totalSize() {
         int total = 0;
-        for (Map<String, AnimationFrame> perPlayer : FRAMES.values()) {
-            total += perPlayer.size();
+        for (PerPlayer perPlayer : FRAMES.values()) {
+            total += perPlayer.frames.size() + perPlayer.negatives.size();
         }
         return total;
     }
 
     private static void prune() {
-        Iterator<Map.Entry<UUID, Map<String, AnimationFrame>>> players = FRAMES.entrySet().iterator();
+        Iterator<Map.Entry<UUID, PerPlayer>> players = FRAMES.entrySet().iterator();
         while (players.hasNext()) {
-            Map<String, AnimationFrame> perPlayer = players.next().getValue();
-            Iterator<Map.Entry<String, AnimationFrame>> frames = perPlayer.entrySet().iterator();
+            PerPlayer perPlayer = players.next().getValue();
+            Iterator<Map.Entry<String, AnimationFrame>> frames = perPlayer.frames.entrySet().iterator();
             while (frames.hasNext()) {
                 if (frames.next().getValue().idleMillis() > IDLE_EVICT_MS) {
                     frames.remove();
                 }
             }
-            if (perPlayer.isEmpty()) {
+            if (perPlayer.frames.isEmpty() && perPlayer.negatives.isEmpty()) {
                 players.remove();
             }
         }

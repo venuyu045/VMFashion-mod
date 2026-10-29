@@ -68,7 +68,8 @@ public final class BedrockAnimations {
                 }
             }
         }
-        return Map.copyOf(result);
+        // 保留 anim.json 里的声明顺序：AnimationCache 依赖"取第一个"作为默认动画
+        return java.util.Collections.unmodifiableMap(new LinkedHashMap<>(result));
     }
 
     private static BedrockAnimation parseOne(String name, JsonObject object, Consumer<String> warn) {
@@ -129,6 +130,7 @@ public final class BedrockAnimations {
             return null;
         }
         List<double[]> keyframes = new ArrayList<>(); // [time, x, y, z]
+        boolean truncated = false;
 
         if (element.isJsonArray()) {
             float[] value = readVec3(element, degrees);
@@ -158,6 +160,11 @@ public final class BedrockAnimations {
                     }
                     continue;
                 }
+                if (keyframes.size() >= MAX_KEYFRAMES_PER_TRACK) {
+                    // 边解析边限流：先卡住，别等构建完几十万个再截断（那时内存已经爆了）
+                    truncated = true;
+                    continue;
+                }
                 keyframes.add(new double[]{time, value[0], value[1], value[2]});
             }
         } else {
@@ -167,12 +174,9 @@ public final class BedrockAnimations {
         if (keyframes.isEmpty()) {
             return null;
         }
-        if (keyframes.size() > MAX_KEYFRAMES_PER_TRACK) {
-            if (warn != null) {
-                warn.accept(context + " 的关键帧数量 " + keyframes.size() + " 超过上限 "
-                        + MAX_KEYFRAMES_PER_TRACK + "，已按上限截断");
-            }
-            keyframes = new ArrayList<>(keyframes.subList(0, MAX_KEYFRAMES_PER_TRACK));
+        if (truncated && warn != null) {
+            warn.accept(context + " 的关键帧数量超过上限 " + MAX_KEYFRAMES_PER_TRACK
+                    + "，已丢弃超出部分（防止恶意文件在解析期吃内存）");
         }
         keyframes.sort(Comparator.comparingDouble(a -> a[0]));
         // 同一时间点只保留最后一个（JSON 里重复 key 不可能出现，但 pre/post 形式可能撞）
