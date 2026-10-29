@@ -1,0 +1,9 @@
+allprojects {
+    afterEvaluate { p ->
+        p.tasks.register('printClientCp') {
+            doLast {
+                println "CLIENT_CP=" + p.configurations.clientCompileClasspath.asPath
+            }
+        }
+    }
+}

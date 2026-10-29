@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "id": "vmfashion",
+  "version": "${version}",
+  "name": "Venus Mc Fashion",
+  "description": "A Fabric client mod for Minecraft fashion and outfit management.",
+  "authors": [
+    "Venus"
+  ],
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "com.venus.vmfashion.VMFashionClient"
+    ]
+  },
+  "mixins": [
+    "vmfashion.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": ">=0.165.0",
+    "geckolib": ">=5.5.7"
+  }
+}

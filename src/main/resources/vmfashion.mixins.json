@@ -1,0 +1,14 @@
+{
+  "required": true,
+  "package": "com.venus.vmfashion.mixin",
+  "compatibilityLevel": "JAVA_25",
+  "client": [
+    "AvatarRenderStateMixin",
+    "AvatarRendererMixin",
+    "CapeLayerMixin",
+    "PlayerModelMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

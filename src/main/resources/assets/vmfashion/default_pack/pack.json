@@ -1,0 +1,28 @@
+{
+  "formatVersion": 1,
+  "id": "example",
+  "name": "VMFashion 示例时装包",
+  "version": "1.0.0",
+  "author": "VMFashion",
+  "license": "MIT",
+  "cosmetics": [
+    {
+      "id": "backboard",
+      "name": "示例背板",
+      "category": "back",
+      "attachedBone": "body",
+      "model": "cosmetics/backboard/model.geo.json",
+      "texture": "cosmetics/backboard/texture.png",
+      "scale": 1.0
+    },
+    {
+      "id": "crown",
+      "name": "示例皇冠",
+      "category": "hat",
+      "attachedBone": "head",
+      "model": "cosmetics/crown/model.geo.json",
+      "texture": "cosmetics/crown/texture.png",
+      "scale": 1.0
+    }
+  ]
+}
