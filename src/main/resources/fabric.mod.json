@@ -18,11 +18,17 @@
   "entrypoints": {
     "client": [
       "com.venus.vmfashion.VMFashionClient"
+    ],
+    "modmenu": [
+      "com.venus.vmfashion.integration.ModMenuIntegration"
     ]
   },
   "mixins": [
     "vmfashion.mixins.json"
   ],
+  "suggests": {
+    "modmenu": ">=21.0.0"
+  },
   "depends": {
     "fabricloader": ">=0.19.5",
     "minecraft": "~26.3",

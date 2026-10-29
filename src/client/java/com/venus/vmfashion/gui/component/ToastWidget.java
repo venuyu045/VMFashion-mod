@@ -1,5 +1,7 @@
 package com.venus.vmfashion.gui.component;
 
+import com.venus.vmfashion.VMFashionClient;
+import com.venus.vmfashion.config.ModConfig;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
@@ -10,6 +12,12 @@ import java.util.List;
 
 /**
  * Toast 通知组件 - 显示操作反馈
+ *
+ * <p>文案支持 {@link Component}（推荐传 {@code Component.translatable(...)}，随语言切换），
+ * 同时保留 {@code String} 重载给旧调用点。
+ *
+ * <p>是否显示受 {@link ModConfig#isToastEnabled()} 控制（路线图 §10 #2 的「死配置」之一）：
+ * 关闭后所有 Toast 静默丢弃，调用方不需要自己判断。
  */
 public class ToastWidget {
 
@@ -24,6 +32,11 @@ public class ToastWidget {
      * 显示成功提示
      */
     public static void showSuccess(String message) {
+        showSuccess(Component.literal(message));
+    }
+
+    /** 显示成功提示（可翻译文案）。 */
+    public static void showSuccess(Component message) {
         addToast(message, ToastType.SUCCESS);
     }
 
@@ -31,6 +44,11 @@ public class ToastWidget {
      * 显示错误提示
      */
     public static void showError(String message) {
+        showError(Component.literal(message));
+    }
+
+    /** 显示错误提示（可翻译文案）。 */
+    public static void showError(Component message) {
         addToast(message, ToastType.ERROR);
     }
 
@@ -38,6 +56,11 @@ public class ToastWidget {
      * 显示警告提示
      */
     public static void showWarning(String message) {
+        showWarning(Component.literal(message));
+    }
+
+    /** 显示警告提示（可翻译文案）。 */
+    public static void showWarning(Component message) {
         addToast(message, ToastType.WARNING);
     }
 
@@ -45,10 +68,18 @@ public class ToastWidget {
      * 显示信息提示
      */
     public static void showInfo(String message) {
+        showInfo(Component.literal(message));
+    }
+
+    /** 显示信息提示（可翻译文案）。 */
+    public static void showInfo(Component message) {
         addToast(message, ToastType.INFO);
     }
 
-    private static void addToast(String message, ToastType type) {
+    private static void addToast(Component message, ToastType type) {
+        if (message == null || !isToastEnabled()) {
+            return;
+        }
         Toast toast = new Toast(message, type, System.currentTimeMillis());
         toasts.add(toast);
 
@@ -56,6 +87,21 @@ public class ToastWidget {
         if (toasts.size() > 5) {
             toasts.remove(0);
         }
+    }
+
+    /**
+     * Toast 总开关。
+     *
+     * <p>配置实例可能还没创建（初始化早期 / 单元测试），拿不到时按"显示"处理，
+     * 否则一个空指针会让所有反馈都消失。
+     */
+    private static boolean isToastEnabled() {
+        VMFashionClient client = VMFashionClient.getInstance();
+        if (client == null) {
+            return true;
+        }
+        ModConfig config = client.getConfig();
+        return config == null || config.isToastEnabled();
     }
 
     /**
@@ -111,15 +157,17 @@ public class ToastWidget {
             String icon = toast.type.getIcon();
             int maxToastWidth = 350;
             int maxTextWidth = maxToastWidth - 50; // 留给图标和边距
-            int textWidth = client.font.width(toast.message);
+            // 换行 / 宽度都按"当前语言下的纯文本"算，渲染时也用纯文本，避免每行都要重新排版 Component
+            String plain = toast.plain();
+            int textWidth = client.font.width(plain);
 
             // 拆分为多行
             java.util.List<String> lines = new java.util.ArrayList<>();
             if (textWidth <= maxTextWidth) {
-                lines.add(toast.message);
+                lines.add(plain);
             } else {
                 // 按最大宽度拆行
-                String remaining = toast.message;
+                String remaining = plain;
                 while (!remaining.isEmpty()) {
                     int fitLen = 0;
                     for (int i = 1; i <= remaining.length(); i++) {
@@ -218,14 +266,25 @@ public class ToastWidget {
      * Toast 数据类
      */
     private static class Toast {
-        final String message;
+        final Component message;
         final ToastType type;
         final long createdAt;
+        /** 纯文本缓存：同一条 Toast 每帧都要量宽度，避免反复解析 Component。 */
+        private String plain;
 
-        Toast(String message, ToastType type, long createdAt) {
+        Toast(Component message, ToastType type, long createdAt) {
             this.message = message;
             this.type = type;
             this.createdAt = createdAt;
+        }
+
+        String plain() {
+            String cached = plain;
+            if (cached == null) {
+                cached = message == null ? "" : message.getString();
+                plain = cached;
+            }
+            return cached;
         }
     }
 }

@@ -17,8 +17,11 @@ public class SearchField {
     private String lastQuery = "";
 
     public SearchField(Font textRenderer, int x, int y, int width, int height) {
-        this.textField = new EditBox(textRenderer, x, y, width, height, Component.literal("搜索"));
-        this.textField.setHint(Component.literal("🔍 搜索...").withStyle(s -> s.withColor(0xFF888888)));
+        this.textField = new EditBox(textRenderer, x, y, width, height,
+                Component.translatable("vmfashion.search.hint"));
+        // 提示文案走语言文件（zh_cn / en_us 都有 vmfashion.search.hint），不要再硬编码中文
+        this.textField.setHint(Component.translatable("vmfashion.search.hint")
+                .withStyle(s -> s.withColor(0xFF888888)));
         this.textField.setResponder(this::onTextChanged);
     }
 

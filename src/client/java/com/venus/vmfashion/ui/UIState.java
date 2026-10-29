@@ -28,6 +28,14 @@ public class UIState {
     // 窗口渲染顺序（最后 = 最上层）
     private List<String> renderOrder = new ArrayList<>();
 
+    /**
+     * 衣柜上次选中的分类 key（{@code "all"} 或 {@link com.venus.vmfashion.cosmetic.CosmeticCategory#key()}）。
+     *
+     * <p>衣柜界面是玩家最常开的面板，每次都回到「全部」等于每次都要再点一次分类，
+     * 因此把上次的分类记在这里（和其它窗口状态一起落盘）。
+     */
+    private String wardrobeCategory = "all";
+
     public static class WindowState {
         public int x;
         public int y;
@@ -111,6 +119,17 @@ public class UIState {
      */
     public List<String> getRenderOrder() {
         return renderOrder;
+    }
+
+    /** 衣柜上次选中的分类 key；{@code "all"} 表示「全部」。 */
+    public String getWardrobeCategory() {
+        return wardrobeCategory;
+    }
+
+    /** 记录衣柜当前分类（{@code "all"} 或分类 key）。 */
+    public void setWardrobeCategory(String wardrobeCategory) {
+        this.wardrobeCategory = wardrobeCategory == null || wardrobeCategory.isBlank()
+                ? "all" : wardrobeCategory.trim();
     }
 
     /**

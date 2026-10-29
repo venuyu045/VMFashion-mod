@@ -23,7 +23,8 @@ LOCK=${VMF_COMPILE_LOCK:-/tmp/vmf-compile.lock}
 
 gen_cp() {
     cd "$ROOT" || exit 1
-    "$ROOT/gradlew" -q -I tools/verify/print-classpath.gradle printClientCp --offline 2>/dev/null \
+    # 和 tools/dev/gradle.sh 用同一把锁：本机内存只够同时跑一个 Gradle
+    flock /tmp/vmf-gradle.lock "$ROOT/gradlew" -q -I tools/verify/print-classpath.gradle printClientCp --offline 2>/dev/null \
         | grep '^CLIENT_CP=' | sed 's/^CLIENT_CP=//' > "$CP_FILE"
     if [ ! -s "$CP_FILE" ]; then
         echo "[check] 生成 classpath 失败，试试先 ./gradlew build" >&2
