@@ -154,6 +154,8 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 3. 绑定成功后，网页衣柜和游戏内 mod 共用同一份穿戴配置（一个网站账号可绑多个 MC 账号）。
 
 接口契约见 [`docs/fashion-api.md`](docs/fashion-api.md)（自建后端时参考）。
+排障见 [`docs/troubleshooting.md`](docs/troubleshooting.md)，架构与数据流见 [`docs/architecture.md`](docs/architecture.md)，
+参与开发见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 
 ### 时装包自动下发
 

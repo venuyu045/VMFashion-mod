@@ -22,7 +22,7 @@
   每（玩家 × 时装）独立相位 —— 多人同屏各自动画互不干扰。
   支持 `loop` / `animation_length` / `bones.{rotation,position,scale}` 线性插值；
   不支持 molang / timeline / animation_controllers。
-- **中英双语**：界面与命令输出全部走翻译 key（112 个），跟随游戏语言；
+- **中英双语**：界面与命令输出全部走翻译 key（120 个），跟随游戏语言；
   只剩包加载警告等开发者诊断信息是中文。
 - **可视化衣柜界面**（默认按 `K` 打开，或 `/vmfashion open`）：
   分类 tab、贴图缩略图网格、搜索、右侧预览、穿上/脱下、同步与资产状态。

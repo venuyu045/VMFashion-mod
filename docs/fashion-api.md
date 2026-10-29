@@ -327,4 +327,5 @@ curl -s -X POST "$BASE/loadouts/resolve" \
 
 - [pack-format.md](pack-format.md) —— 时装包制作与格式（模型作者视角）
 - [../README.md](../README.md) —— 玩家安装与使用
-- [../开发路线图.md](../开发路线图.md) §2.1 / §6.1 —— 自动下发与内容安全的整体规划
+- [pack-format.md §10](./pack-format.md#10-服务端自动下发) —— 客户端侧的包结构与安全限制
+- [architecture.md](./architecture.md) —— 资产下发链路的实现说明
