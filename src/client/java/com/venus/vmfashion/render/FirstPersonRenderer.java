@@ -11,6 +11,7 @@ import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.player.AvatarRenderer;
 import net.minecraft.client.renderer.entity.state.AvatarRenderState;
 import net.minecraft.client.renderer.state.level.PlayerRenderState;
+import net.minecraft.client.renderer.texture.OverlayTexture;
 import net.minecraft.world.entity.HumanoidArm;
 
 import java.util.Map;
@@ -131,7 +132,8 @@ public final class FirstPersonRenderer {
                 if (entry == null) {
                     continue;
                 }
-                CosmeticRenderDispatcher.submitOne(poseStack, collector, packedLight, uuid,
+                CosmeticRenderDispatcher.submitOne(poseStack, collector, packedLight,
+                        OverlayTexture.NO_OVERLAY, uuid,
                         definition, entry, worn.scale(), model, globalScale);
             }
         }

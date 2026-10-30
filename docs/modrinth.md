@@ -54,6 +54,21 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 | GeckoLib | `5.5.7` |
 | Mod Menu（可选） | `21.0.0` |
 
+## 版本亮点（v1.1.0 可直接用）
+
+```
+## v1.1.0 — 表现力 + 数据链路
+
+- 服务端时装包**自动更新**：后端发新版本后客户端自动重下并原子替换旧目录，
+  不再需要手动 /vmfashion cache clear；替换失败会回滚旧版本
+- **半透明材质**：pack.json 写 material:"translucent" 做纱裙 / 半透翅膀 / 玻璃挂件
+- **多动画按名选择**：一件时装多个动画时用 animationName 指定播哪个
+- **受伤红闪**：挨打时时装和皮肤一起闪红（以前只有皮肤闪）
+- 单测 235 → 255
+
+已知限制：半透明不按距离排序（同屏多件可能穿帮）；molang / 动画控制器仍不支持。
+```
+
 ## 版本亮点（v1.0.1 可直接用）
 
 ```
@@ -104,7 +119,7 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 
 ## 检查清单（发布前）
 
-- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 231 条单测）
+- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 255 条单测）
 - [ ] `bash tools/verify/run.sh` 7 步全过
 - [ ] `bash tools/dev/check-jar.sh` / `check-mod-json.sh` / `check-lang.sh` 全过
 - [ ] `bash tools/dev/list-i18n-todo.sh --count` = 0

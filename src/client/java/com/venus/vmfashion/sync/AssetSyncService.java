@@ -369,10 +369,20 @@ public final class AssetSyncService {
             return;
         }
         String key = packId.toLowerCase(Locale.ROOT);
-        if (installed.containsKey(key) || userPacks.contains(key)) {
-            // 已经能解析到：顺手记一下"最近用过"，供 LRU 淘汰（不在这里做磁盘 IO）
-            recentlyUsed.add(key);
+        if (userPacks.contains(key)) {
+            // 用户自己装的同名包优先，永不覆盖 / 永不更新
             return;
+        }
+        InstalledPack local = installed.get(key);
+        if (local != null) {
+            PackCatalog.PackInfo info = catalog == null ? null : catalog.find(key);
+            if (info == null || !PackUpdatePolicy.needsUpdate(local.version(), local.sha256(),
+                    info.version(), info.sha256())) {
+                // 已经能解析到且是最新：顺手记一下"最近用过"，供 LRU 淘汰（不在这里做磁盘 IO）
+                recentlyUsed.add(key);
+                return;
+            }
+            // 清单里有更新的版本：不 return，继续走下面的入队逻辑（本会话内会重装成新版本）
         }
         if (rejectedBySignature.contains(key)) {
             return; // 验签失败过：本会话不再尝试
@@ -494,6 +504,26 @@ public final class AssetSyncService {
 
     // ==================== 队列驱动 ====================
 
+    /**
+     * 本地已装且与清单一致（或清单里还没有这个包）时返回 {@code true}。
+     *
+     * <p>M01 的判定入口：旧实现只看 {@code installed.containsKey}，于是"已装"等于"永远不动"，
+     * 后端发新版本后全体老玩家静默停在旧包。现在队列出队、渲染请求、安装入口三处都走这里。
+     */
+    private boolean isUpToDate(String key) {
+        InstalledPack local = installed.get(key);
+        if (local == null) {
+            return false;
+        }
+        PackCatalog currentCatalog = catalog;
+        PackCatalog.PackInfo info = currentCatalog == null ? null : currentCatalog.find(key);
+        if (info == null) {
+            return true; // 清单里没有这个包：不动它，等清单刷新
+        }
+        return !PackUpdatePolicy.needsUpdate(local.version(), local.sha256(),
+                info.version(), info.sha256());
+    }
+
     private void startQueuedInstalls() {
         ExecutorService executor = ioExecutor;
         if (executor == null) {
@@ -504,7 +534,7 @@ public final class AssetSyncService {
             if (key == null) {
                 return;
             }
-            if (!queued.contains(key) || installed.containsKey(key) || userPacks.contains(key)) {
+            if (!queued.contains(key) || userPacks.contains(key) || isUpToDate(key)) {
                 queued.remove(key);
                 continue;
             }
@@ -539,7 +569,7 @@ public final class AssetSyncService {
             if (submittedEpoch != epoch) {
                 return;
             }
-            if (installed.containsKey(key) || userPacks.contains(key)) {
+            if (userPacks.contains(key)) {
                 return;
             }
             PackCatalog.PackInfo info = currentCatalog.find(key);
@@ -559,8 +589,9 @@ public final class AssetSyncService {
                 return;
             }
             InstalledPack existing = installed.get(key);
-            if (existing != null && existing.sha256().equalsIgnoreCase(info.sha256())) {
-                return; // 已是最新
+            if (existing != null && !PackUpdatePolicy.needsUpdate(existing.version(), existing.sha256(),
+                    info.version(), info.sha256())) {
+                return; // 已是最新（M01：只有真的过期才重装）
             }
 
             Path serverRoot = PackLoader.serverPacksDir();
@@ -633,31 +664,53 @@ public final class AssetSyncService {
             }
 
             Path target = serverRoot.resolve(info.id());
+            // 目录可能已经存在：① 本地是旧版本（M01：要被替换）；② 上次崩溃留下的半成品；
+            // ③ 极端的并发安装。做法统一成「先整体改名让位 → 装新的 → 成功后删旧的」，
+            // 任一步失败都把旧目录移回去，绝不出现"新包没装好、旧包也没了"。
+            Path backup = null;
             if (Files.exists(target)) {
-                // 目标已存在（并发安装 / 玩家手动放的）：绝不覆盖
-                VMFashionClient.LOGGER.debug("服务端包目录已存在，跳过安装: {}", info.id());
-                return;
+                backup = serverRoot.resolve(TEMP_PREFIX + "old-" + UUID.randomUUID());
+                moveIntoPlace(target, backup);
+                VMFashionClient.LOGGER.debug("服务端包目录已存在，先移开再装新版本: {} → {}",
+                        info.id(), backup.getFileName());
             }
-            moveIntoPlace(unzipped, target);
-
             long now = System.currentTimeMillis();
             long bytes = extraction.totalBytes();
+            long previousBytes = existing != null ? existing.bytes() : 0L;
             try {
+                moveIntoPlace(unzipped, target);
                 writeMarker(target, info, download.sha256(), bytes, now);
-            } catch (Throwable markerFailure) {
-                // 目录已经移到位但 marker 写失败：如果就这么返回，installed 不登记、重试时又会因为
-                // "目录已存在"被跳过 → 本会话这件时装永远不显示。所以回滚掉这个半成品目录。
+            } catch (Throwable installFailure) {
+                // 目录可能已经移到位但 marker 写失败：删掉半成品，把旧目录移回去
                 deleteRecursively(target);
-                throw markerFailure;
+                if (backup != null) {
+                    try {
+                        moveIntoPlace(backup, target);
+                    } catch (IOException restoreFailure) {
+                        VMFashionClient.LOGGER.warn("时装包 {} 回滚失败，旧版本已丢失（下次会重新下载）: {}",
+                                info.id(), restoreFailure.toString());
+                    }
+                }
+                throw installFailure;
+            }
+            if (backup != null) {
+                deleteRecursively(backup);
             }
             installed.put(key, new InstalledPack(info.id(), info.version(), download.sha256(), bytes, now, now));
-            cachedBytes.addAndGet(bytes);
+            // 替换旧版本时先减掉旧体积，避免缓存统计虚高、触发不必要的 LRU 淘汰
+            cachedBytes.addAndGet(bytes - previousBytes);
             recentlyUsed.add(key);
             failedUntil.remove(key);
             catalogMisses.remove(key);
             reloadPending.set(true);
-            VMFashionClient.LOGGER.info("已下发时装包 {} v{}（{}，{} 个文件）",
-                    info.id(), info.version(), humanBytes(bytes), extraction.fileCount());
+            if (existing != null && !existing.version().equalsIgnoreCase(info.version())) {
+                VMFashionClient.LOGGER.info("已更新时装包 {} v{} → v{}（{}，{} 个文件）",
+                        info.id(), existing.version().isBlank() ? "?" : existing.version(),
+                        info.version(), humanBytes(bytes), extraction.fileCount());
+            } else {
+                VMFashionClient.LOGGER.info("已下发时装包 {} v{}（{}，{} 个文件）",
+                        info.id(), info.version(), humanBytes(bytes), extraction.fileCount());
+            }
         } catch (Throwable t) {
             Throwable cause = t instanceof java.util.concurrent.CompletionException && t.getCause() != null
                     ? t.getCause() : t;
@@ -732,6 +785,28 @@ public final class AssetSyncService {
                 }
             }
             catalogMisses.clear();
+            // M01：已经装过的包如果清单里有新版本，立刻排队更新。
+            // 旧实现只清 catalogMisses，从不 diff 版本 → 后端发新版本后老玩家永远停在旧包。
+            int updates = 0;
+            for (Map.Entry<String, PackCatalog.PackInfo> entry : packs.entrySet()) {
+                String key = entry.getKey();
+                InstalledPack local = installed.get(key);
+                if (local == null || userPacks.contains(key)) {
+                    continue;
+                }
+                PackCatalog.PackInfo info = entry.getValue();
+                if (!PackUpdatePolicy.needsUpdate(local.version(), local.sha256(),
+                        info.version(), info.sha256())) {
+                    continue;
+                }
+                if (queued.add(key)) {
+                    queue.add(key);
+                    updates++;
+                }
+            }
+            if (updates > 0) {
+                VMFashionClient.LOGGER.info("发现 {} 个时装包有新版本，已排队更新", updates);
+            }
             VMFashionClient.LOGGER.debug("时装包清单已更新：{} 个包", packs.size());
         });
     }

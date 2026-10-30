@@ -338,8 +338,29 @@ public final class PackLoader {
         }
         scale = Math.max(0.01F, Math.min(100.0F, scale));
 
+        // 材质：material 优先（cutout / translucent），兼容老写法 "translucent": true。
+        // 只有这两档：cutout 是 alpha 二值（默认，绝大多数时装），translucent 才真混合。
+        boolean translucent = false;
+        String material = optString(meta, "material", "").trim().toLowerCase(Locale.ROOT);
+        if (!material.isEmpty()) {
+            if ("translucent".equals(material) || "blend".equals(material)) {
+                translucent = true;
+            } else if (!"cutout".equals(material) && !"opaque".equals(material)) {
+                warnings.add(context + ": material 只支持 cutout/translucent，已回退 cutout（" + material + "）");
+            }
+        } else if (meta != null && meta.has("translucent") && !meta.get("translucent").isJsonNull()) {
+            try {
+                translucent = meta.get("translucent").getAsBoolean();
+            } catch (Exception ignored) {
+                // 非布尔值：按默认 cutout 处理，不额外告警（上面 material 才是推荐写法）
+            }
+        }
+
+        // 动画名：一件时装里有多个动画时选播哪个；空 = 播第一个（保持旧行为）
+        String animationName = optString(meta, "animationName", "").trim();
+
         return new CosmeticDefinition(packId, localId, optString(meta, "name", localId), category,
-                model, texture, emissive, animation, bone, hideParts, scale);
+                model, texture, emissive, animation, bone, hideParts, scale, translucent, animationName);
     }
 
     // ==================== 目录扫描 ====================

@@ -173,6 +173,8 @@
 | `attachedBone` | string | = 分类的默认骨骼 | 挂到哪根骨骼上，见 §6.2 |
 | `hideParts` | string[] | `[]` | 穿上后隐藏哪些原版部位，见 §7 |
 | `scale` | number | `1.0` | 单件缩放（会再乘全局 `scale` 配置）。非法值回退 `1.0` 并警告，最终限制在 `0.01..100` |
+| `material` | string | `cutout` | 渲染管线：`cutout`（alpha 二值）/ `translucent`（真混合，做纱裙 / 半透翅膀）。非法值回退 `cutout` 并警告；也接受旧写法 `"translucent": true` |
+| `animationName` | string | 第一个动画 | 一件时装有多个动画时选播哪个（`anim.json` 里 `animations` 的 key）；名字对不上会回退第一个并记一次警告 |
 | `model` | string | 自动发现 | 模型路径，相对包根目录 |
 | `texture` | string | 自动发现 | 主贴图路径，相对包根目录 |
 | `emissive` | string | 自动发现 | 发光层路径，相对包根目录 |
@@ -462,7 +464,7 @@ mod 只认 **Bedrock `format_version 1.12.0`** 的几何格式，且必须包含
 | 关键帧插值 | **线性插值**（按时间采样） |
 | 骨骼名匹配 | 与 `model.geo.json` 里的骨骼 `name` 对应，**大小写不敏感**；对不上的骨骼通道会被忽略（只记警告，不影响模型） |
 | 多人同屏 | 每（玩家 × 时装）独立计时与独立骨骼快照，相位互不干扰 |
-| 多个动画 | 一个文件里有多个动画时**只播第一个**（按 `animations` 里的声明顺序） |
+| 多个动画 | 一个文件里有多个动画时，用 `animationName` 指定播哪个（缺省播第一个，按 `animations` 里的声明顺序） |
 
 **不支持的能力**（写了也不会生效，但不会让包加载失败）：
 

@@ -22,7 +22,8 @@ bash tools/verify/run.sh
 4. **X 轴镜像**：JSON 里的 +X 必须落在玩家左手边（GeckoLib 烘焙时会取反一次，这里要翻回来）；
 5. **attachedBone**：通过反射调用 `applyAttachment`，检查低头/转头时皇冠跟着动。
 
-脚本一共跑 4 步（渲染链路 / mixin 目标 / 缩放原点 / emissive 遮罩），任何一步失败都会退出非 0。
+脚本一共跑 **7 步**（渲染链路 / mixin 目标 / 缩放原点 / emissive 遮罩 / 动画骨骼名 /
+第一人称坐标系 / 坏模型兜底），任何一步失败都会退出非 0。
 
 `VerifyMixins.java`：解析每个 mixin 的 `@Mixin` / `@Inject`，用 ASM 检查目标类里
 确实存在对应 `name + descriptor` 的方法（26.x 不重映射，descriptor 必须完全一致）。

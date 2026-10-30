@@ -3,7 +3,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.0.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.1.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
@@ -23,10 +23,12 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | **可视化衣柜** | 默认按 `K` 打开（也可 `/vmfashion open`）：分类 tab、贴图缩略图网格、搜索、试穿/脱下、实时状态 |
 | **Bedrock 模型** | `model.geo.json` 由 GeckoLib 直接烘焙，Blockbench 里怎么摆游戏里就怎么显示（脚底原点 / Y 向上 / 1/16 格） |
 | **挂载骨骼** | `attachedBone` 支持 `body` / `head` / 左右手臂 / 左右腿，跟着部位一起动 |
-| **骨骼动画** | `anim.json`（Bedrock 动画）按关键帧循环播放；每（玩家 × 时装）独立相位，多人同屏互不干扰 |
+| **骨骼动画** | `anim.json`（Bedrock 动画）按关键帧循环播放；每（玩家 × 时装）独立相位，多人同屏互不干扰；一件时装多个动画时用 `animationName` 选播 |
 | **第一人称** | 挂在 `right_arm` / `left_arm` 上的时装在第一人称也可见（空手时），跟随挥手/拉弓动作 |
 | **隐藏原版部件** | `hideParts` 不只隐藏玩家模型：盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏，不会穿模 |
 | **发光层** | `emissive.png` **只让真正不透明的区域发光**（逐 quad 遮罩），不描边、不受光照影响 |
+| **半透明材质** | `material: "translucent"` 走真混合管线，做纱裙 / 半透翅膀 / 玻璃挂件（默认 `cutout`） |
+| **受伤红闪** | 时装跟随原版模型的受伤红闪（overlay 与皮肤一致，不会"人闪红、时装不闪"） |
 | **云端衣柜** | 双路认证（正版 / 皮肤站）、进服自动拉取、换装即时上报、周期刷新别人身上的变化 |
 | **网站绑定** | `/vmfashion bind` 在聊天栏给出 6 位绑定码，到站点「时装绑定」页输入即可让网页衣柜和游戏内共用一份穿戴 |
 | **时装包自动下发** | 别人穿了本地没装的时装时，按 `sha256` 自动下载并安全解压到 `packs/server/`（可关） |
@@ -215,6 +217,9 @@ config/vmfashion/packs/<packId>/
 - `hideParts`：`head` / `body` / `left_arm` / `right_arm` / `left_leg` / `right_leg` / `all`
   （对应部位的外层皮肤、盔甲、手持物、披风/鞘翅、头戴、鹦鹉、箭都会一起隐藏）；
 - `scale`：单件时装的额外缩放，**绕挂载骨骼的 pivot 缩放**（不是绕脚底）；
+- `material`：`cutout`（默认，alpha 二值）/ `translucent`（真混合，做纱裙、半透翅膀）；
+  也接受老写法 `"translucent": true`；
+- `animationName`：一件时装有多个动画时选播哪个（`anim.json` 里 `animations` 的 key，缺省播第一个）；
 - 所有路径相对包根目录，越界（`..`）会被拒绝。
 
 模型坐标系：原点在**玩家脚底**、**Y 轴向上**、单位 1/16 格；`+Z` 是背后、`-Z` 是正面。
@@ -258,15 +263,15 @@ config/vmfashion/packs/<packId>/
 
 - **动画**：支持 Bedrock `anim.json` 的 `loop` / `animation_length` / `bones.{rotation,position,scale}`，
   线性插值；**不支持** molang 表达式、`timeline`、音效关键帧、`animation_controllers`，
-  `catmullrom` 按线性处理；一件时装里有多个动画时播第一个。
+  `catmullrom` 按线性处理。一件时装里有多个动画时，用 `animationName` 选播哪个（缺省播第一个）。
 - **第一人称**：手臂挂件在**空手**时可见；手持物品时原版只渲染物品不渲染手臂，所以看不到
   （这是原版行为，改它要动物品渲染路径）。头部/身体挂件在第一人称被相机包住，不做。
 - **共享模型实例**：hideParts 是写 `ModelPart.visible`，而原版 `submitModel` 延迟到 flush 才
   `setupAnim`；理论上同屏有别人穿 hideParts 含手臂的时装时可能影响本地第一人称手臂。
   彻底修需要把 hideParts 改成"渲染时按状态判定"，属于架构改动。
 - **光影**：`submitCustomGeometry` 在 Iris 下是否走光影管线未验证（没有测试环境）。
-- **半透明排序**：自定义几何的半透明节点按 feature 分组提交、不做距离排序，
-  与水/染色玻璃的前后关系由渲染阶段顺序决定。
+- **半透明排序**：`material:"translucent"` 已支持，但自定义几何的半透明节点按 feature 分组提交、
+  不做距离排序，与水/染色玻璃的前后关系由渲染阶段顺序决定（同屏多件半透明可能穿帮）。
 - **多 `minecraft:geometry`**：一个模型文件里定义多个 geometry 时只渲染第一个。
 - **包签名**：已支持 Ed25519 验签，但**默认宽松模式**（未签名/未知密钥的包仍会安装，只记提示）；
   且客户端内置公钥目前是**占位值**，真正的信任锚要靠 `config/vmfashion/trusted_keys.json` 配置。

@@ -206,7 +206,7 @@ void loadsPackFromTempDir() throws IOException {
 bash tools/verify/run.sh
 ```
 
-在没有显卡/显示器的环境里验证（当前是 **5 步**）：
+在没有显卡/显示器的环境里验证（当前是 **7 步**）：
 
 1. **渲染链路**：用真实生产代码把示例包的 `.geo.json` 烘焙成 `BakedGeoModel`，
    遍历骨骼把顶点写进一个记录型 `VertexConsumer`，检查：
@@ -215,11 +215,14 @@ bash tools/verify/run.sh
    - X 轴镜像方向正确；
    - `attachedBone` 跟随头部旋转；
 2. **mixin 目标方法**：解析每个 mixin 的 `@Mixin` / `@Inject`，用 ASM 检查目标类里
-   确实存在对应的 `name + descriptor`；
+   确实存在对应的 `name + descriptor`（13 个 mixin 全部校验）；
 3. **缩放原点**：确认 `scale` 是绕挂载 pivot（头饰放大不会飞出去），不是绕脚底；
 4. **emissive 遮罩**：逐 quad 过滤（UV 落在透明区域的面不发光、全透明 → 空遮罩）；
 5. **动画解析**：`anim.json` 能解析成动画、动画里的骨骼名在烘焙后的模型里**真的存在**、
-   时长 > 0、采样数值符合预期。
+   时长 > 0、采样数值符合预期；
+6. **第一人称坐标系**：手臂挂件在第一人称的换算与原版 `ModelPart#translateAndRotate` 数值一致
+   （含挥手 / 换手姿态）；
+7. **坏模型兜底**：坏 `model.geo.json`（`cubes: null` / 非法 JSON）渲染时不抛异常、不产生半个模型。
 
 > 它**不能**替代真机进游戏看画面：着色器 / 光照 / 渲染顺序只能在有 GL 的环境确认。
 

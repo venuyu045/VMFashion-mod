@@ -28,10 +28,33 @@ public final class CosmeticDefinition {
     /** 穿上后要隐藏的原版部件（head/body/right_arm/left_arm/right_leg/left_leg）。 */
     private final Set<String> hideParts;
     private final float scale;
+    /**
+     * 是否用半透明管线渲染（{@code pack.json} / {@code meta.json} 的 {@code material:"translucent"}）。
+     *
+     * <p>默认 {@code false} = cutout（alpha 只分 0/1），适合绝大多数时装；纱裙、半透翅膀、
+     * 玻璃质感挂件需要 {@code translucent}。半透明自定义几何<strong>不按距离排序</strong>
+     * （见 {@code CosmeticRenderDispatcher} 的 TODO），同屏多件半透明时前后关系由提交顺序决定。
+     */
+    private final boolean translucent;
+    /**
+     * 指定播放哪个动画（{@code anim.json} 里 {@code animations} 的 key）；空串 = 播第一个。
+     *
+     * <p>一件时装里有多个动画（待机 / 漂浮 / 特殊动作）时靠这个字段选，而不是只能播第一个。
+     */
+    private final String animationName;
 
+    /** 兼容旧调用（不带半透明 / 动画名）：等价于 cutout + 播第一个动画。 */
     public CosmeticDefinition(String packId, String localId, String name, CosmeticCategory category,
                               Path modelFile, Path textureFile, Path emissiveFile, Path animationFile,
                               String attachedBone, Set<String> hideParts, float scale) {
+        this(packId, localId, name, category, modelFile, textureFile, emissiveFile, animationFile,
+                attachedBone, hideParts, scale, false, "");
+    }
+
+    public CosmeticDefinition(String packId, String localId, String name, CosmeticCategory category,
+                              Path modelFile, Path textureFile, Path emissiveFile, Path animationFile,
+                              String attachedBone, Set<String> hideParts, float scale,
+                              boolean translucent, String animationName) {
         this.packId = packId;
         this.localId = localId;
         this.id = packId + ":" + localId;
@@ -44,6 +67,8 @@ public final class CosmeticDefinition {
         this.attachedBone = attachedBone;
         this.hideParts = Set.copyOf(hideParts);
         this.scale = scale;
+        this.translucent = translucent;
+        this.animationName = animationName == null ? "" : animationName.trim();
     }
 
     public String id() {
@@ -94,6 +119,16 @@ public final class CosmeticDefinition {
 
     public float scale() {
         return scale;
+    }
+
+    /** 是否走半透明管线（{@code material:"translucent"}）；缺省 {@code false} = cutout。 */
+    public boolean translucent() {
+        return translucent;
+    }
+
+    /** 指定播放的动画名（{@code anim.json} 的 key）；空串表示播第一个。 */
+    public String animationName() {
+        return animationName;
     }
 
     @Override

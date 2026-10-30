@@ -11,6 +11,46 @@
 - 内容审核流 / 举报 / 下架（后端）
 - 后端多 worker（Redis 或粘性会话）
 
+## [1.1.0] - 2026-10-30
+
+「表现力 + 数据链路」版本。核心是修掉一条**名义上存在、实际永远不生效**的链路
+（服务端包新版本永远拉不下来），并补三个内容制作侧的直接痛点。
+
+### 新增
+
+- **服务端时装包自动更新（P0）**：以前 `installed` 里一旦有记录就永久短路，后端发了新版本，
+  老玩家会静默停在旧包，只能 `/vmfashion cache clear`。现在：
+  - 清单刷新后 diff `version` / `sha256`，有过期包立刻排队更新；
+  - 安装改成「旧目录整体改名让位 → 装新版本 → 成功后删旧」，任一步失败都把旧目录移回去；
+  - 缓存体积按差值更新（不再把旧包体积重复计入，避免误触发 LRU 淘汰）；
+  - 判定规则抽成纯函数 `PackUpdatePolicy`（sha 优先、版本回退、信息不足保守不动），有 9 条单测。
+- **半透明材质**：`pack.json` / `meta.json` 支持 `material: "translucent"`（兼容旧写法
+  `"translucent": true`），走 `entityTranslucent` 管线，可以做纱裙 / 半透翅膀 / 玻璃挂件。
+  默认仍是 `cutout`；非法值回退 `cutout` 并告警。
+- **多动画按名选择**：一件时装里有多个动画时，用 `animationName` 指定播哪个
+  （精确匹配 → 大小写不敏感 → 回退第一个并只告警一次）。以前只能播第一个。
+- **受伤红闪**：时装的主层与 emissive 层都改用 `OverlayTexture.pack(NO_WHITE_U, hasRedOverlay)`，
+  挨打时和原版皮肤一起闪红（以前写死 `NO_OVERLAY`，看起来像"时装没挂住"）。
+
+### 修复
+
+- **文档与实现不一致**：`docs/fashion-api.md` 说客户端按 `(packId, sha256)` 判重、`packVersion`
+  用于增量更新 —— 实际旧实现只看"本地有没有"，本轮实现后才真正成立；文档同步改写。
+- **5 处过时数字**：`docs/architecture.md` 的 mixin 数（12 → 13）、`CONTRIBUTING.md` 与
+  `tools/verify/README.md` 的自检步数（5/4 → 7）、`docs/modrinth.md` 的单测数（231 → 255）。
+
+### 工程化
+
+- 单测 **235 → 255**：`PackUpdatePolicyTest`（9 条）、`AnimationSelectionTest`（6 条）、
+  `PackLoaderTest` 补材质 / 动画名解析（5 条）。
+- `PackLoader` 的材质解析对非法值只告警不丢件；`animationName` 空白等价于旧行为。
+
+### 已知限制
+
+- 半透明自定义几何**不按距离排序**（提交阶段决定前后关系），同屏多件半透明可能穿帮；
+- 包更新仍是"整包重下"，没有做增量 / 断点续传（`docs/fashion-api.md` 的 `packVersion` 只用于判重）；
+- 其余限制同 1.0.1（molang / 动画控制器、第一人称手持、hideParts 共享模型、光影兼容性、多 geometry）。
+
 ## [1.0.1] - 2026-10-29
 
 第 4 轮审查（mod 客户端 + 配套网站的前端/后端一起审）后的修复版。功能与 1.0.0 一致，

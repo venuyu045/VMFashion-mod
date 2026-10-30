@@ -52,7 +52,7 @@ com.venus.vmfashion
 │       ├── AnimationTrack     一条关键帧轨道（线性插值 + 循环回绕）
 │       ├── AnimationFrame     每（玩家 × 时装）一份骨骼快照
 │       └── AnimationCache     uuid|cosmeticId → AnimationFrame（30 秒空闲淘汰）
-├── mixin/                     12 个客户端 mixin（见 §3.1 / §3.4）
+├── mixin/                     13 个客户端 mixin（见 §3.1 / §3.4）
 ├── loadout/                   同步层与渲染层之间的唯一入口
 │   ├── LoadoutProvider        接口：resolve(uuids) → CompletableFuture
 │   ├── LocalOnlyProvider      纯本地模式的空实现

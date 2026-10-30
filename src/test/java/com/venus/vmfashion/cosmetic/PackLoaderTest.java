@@ -11,6 +11,7 @@ import java.util.List;
 import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -478,6 +479,85 @@ class PackLoaderTest {
         assertSame(CosmeticCategory.HAT, crown.category());
         assertEquals("head", crown.attachedBone());
         assertEquals("example:backboard", CosmeticRegistry.getInstance().find("backboard").id());
+    }
+
+    // ==================== 材质 / 动画名（v1.1） ====================
+
+    @Test
+    void parsesTranslucentMaterial() throws IOException {
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [
+                  {"id": "veil", "category": "cape", "material": "translucent"}
+                ]}
+                """);
+        createStandardCosmetic(pack, "veil");
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals(1, result.cosmeticCount(), result.warnings().toString());
+        assertTrue(result.packs().get(0).cosmetics().get(0).translucent());
+        assertEquals(List.of(), result.warnings());
+    }
+
+    @Test
+    void defaultsToCutoutAndAcceptsLegacyBoolean() throws IOException {
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [
+                  {"id": "solid", "category": "hat"},
+                  {"id": "veil", "category": "cape", "translucent": true}
+                ]}
+                """);
+        createStandardCosmetic(pack, "solid");
+        createStandardCosmetic(pack, "veil");
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals(2, result.cosmeticCount(), result.warnings().toString());
+        assertFalse(result.packs().get(0).cosmetics().get(0).translucent());
+        assertTrue(result.packs().get(0).cosmetics().get(1).translucent());
+    }
+
+    @Test
+    void warnsOnUnknownMaterialAndFallsBackToCutout() throws IOException {
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [
+                  {"id": "crown", "category": "hat", "material": "glassy"}
+                ]}
+                """);
+        createStandardCosmetic(pack, "crown");
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals(1, result.cosmeticCount());
+        assertFalse(result.packs().get(0).cosmetics().get(0).translucent());
+        assertTrue(hasWarning(result, "material"), result.warnings().toString());
+    }
+
+    @Test
+    void parsesAnimationName() throws IOException {
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [
+                  {"id": "crown", "category": "hat", "animationName": "float"}
+                ]}
+                """);
+        Path dir = createStandardCosmetic(pack, "crown");
+        writeFile(dir.resolve("anim.json"), "{}");
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals("float", result.packs().get(0).cosmetics().get(0).animationName());
+    }
+
+    @Test
+    void blankAnimationNameMeansFirstAnimation() throws IOException {
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [{"id": "crown", "category": "hat"}]}
+                """);
+        createStandardCosmetic(pack, "crown");
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals("", result.packs().get(0).cosmetics().get(0).animationName());
     }
 
     // ==================== 工具 ====================

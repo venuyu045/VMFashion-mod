@@ -11,6 +11,7 @@ import net.minecraft.client.model.geom.ModelPart;
 import net.minecraft.client.model.player.PlayerModel;
 import net.minecraft.client.renderer.SubmitNodeCollector;
 import net.minecraft.client.renderer.entity.state.AvatarRenderState;
+import net.minecraft.client.renderer.rendertype.RenderType;
 import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.texture.OverlayTexture;
 import com.venus.vmfashion.render.anim.AnimationCache;
@@ -74,6 +75,11 @@ public final class CosmeticRenderDispatcher {
         }
         LoadoutService loadouts = LoadoutService.getInstance();
         float globalScale = config().getScale();
+        // 受伤红闪：原版模型走 OverlayTexture.pack(白, hasRedOverlay)，自定义几何原来写死
+        // NO_OVERLAY，所以挨打时原版皮肤闪红、时装不闪（观感上像"时装没挂住"）。
+        // 这里按同一套规则算一次，主层与 emissive 层共用（emissive 不调 useLightmap，
+        // 但 overlay 仍然参与顶点颜色，受伤时同样会闪）。
+        int overlay = OverlayTexture.pack(OverlayTexture.NO_WHITE_U, state.hasRedOverlay);
         // 同一个时装 ID 被后端塞进两个槽位时只画一次：否则两套完全重合的几何会 z-fighting
         // 闪烁，而且白花一倍顶点（发布加固审查提出）。去重缓冲走 ThreadLocal 复用：
         // 这里是每帧每玩家调一次，不能每帧 new 数组（见 SEEN_ID_BUFFER 的注释）。
@@ -110,7 +116,7 @@ public final class CosmeticRenderDispatcher {
                 if (entry == null) {
                     continue;
                 }
-                submitOne(poseStack, collector, packedLight, uuid, definition, entry, worn.scale(),
+                submitOne(poseStack, collector, packedLight, overlay, uuid, definition, entry, worn.scale(),
                         playerModel, globalScale);
             }
         } finally {
@@ -130,10 +136,12 @@ public final class CosmeticRenderDispatcher {
      * 不需要另写一份（见 {@link FirstPersonRenderer} 的注释与 tools/verify 的数值自检）。
      *
      * @param backendScale 后端 / 网页衣柜给这一件时装设的缩放（本地玩家恒为 1.0）
+     * @param overlay      {@link OverlayTexture} 打包值：第三人称带受伤红闪，第一人称传
+     *                     {@link OverlayTexture#NO_OVERLAY}（第一人称没有实体受伤状态）
      * @param globalScale  客户端配置的全局缩放
      */
     static void submitOne(PoseStack poseStack, SubmitNodeCollector collector, int packedLight,
-                          UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
+                          int overlay, UUID uuid, CosmeticDefinition definition, CosmeticAssets.Entry entry,
                           float backendScale, PlayerModel playerModel, float globalScale) {
         // 三层缩放：包自带 × 后端（网页衣柜）× 全局（config.json），规则集中在 ScaleMath（可单测）
         float scale = ScaleMath.combine(definition.scale(), backendScale, globalScale);
@@ -141,6 +149,11 @@ public final class CosmeticRenderDispatcher {
         // 直接把动画帧写进共享骨骼会让 A 的动画出现在 B 身上（路线图 §3.1）。
         // 这里只取对象，真正的求值在渲染回调里做（见 GeoModelRenderer#draw）。
         AnimationFrame frame = AnimationCache.frameFor(uuid, definition, entry);
+        // 材质：默认 cutout；pack.json 写 material:"translucent" 的走真混合（纱裙 / 半透翅膀）。
+        // 半透明节点进的是不排序的提交阶段（见下方 TODO），同屏多件半透明时靠提交顺序决定前后。
+        RenderType renderType = definition.translucent()
+                ? RenderTypes.entityTranslucent(entry.texture())
+                : RenderTypes.entityCutout(entry.texture());
 
         poseStack.pushPose();
         try {
@@ -149,9 +162,9 @@ public final class CosmeticRenderDispatcher {
             // 才是绕挂载点缩放（路线图 #12，原来缩放绕脚底）
             applyAttachment(poseStack, playerModel, definition.attachedBone(), scale);
 
-            collector.submitCustomGeometry(poseStack, RenderTypes.entityCutout(entry.texture()),
+            collector.submitCustomGeometry(poseStack, renderType,
                     (pose, consumer) -> GeoModelRenderer.render(
-                            entry.model(), pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                            entry.model(), pose, consumer, packedLight, overlay,
                             WHITE, frame));
 
             // emissive：只提交"emissive 贴图在该 UV 上确实不透明"的四边形。
@@ -163,7 +176,7 @@ public final class CosmeticRenderDispatcher {
                 // 不会给发光玩家额外描一圈（javap 核对 RenderTypes.lambda$static$21 / eyes）。
                 collector.submitCustomGeometry(poseStack, RenderTypes.eyes(entry.emissive()),
                         (pose, consumer) -> GeoModelRenderer.renderEmissive(
-                                entry.model(), pose, consumer, packedLight, OverlayTexture.NO_OVERLAY,
+                                entry.model(), pose, consumer, packedLight, overlay,
                                 WHITE, mask, frame));
             }
             // TODO(渲染，下一轮)：以下三项需要改架构，本轮只记录取舍：

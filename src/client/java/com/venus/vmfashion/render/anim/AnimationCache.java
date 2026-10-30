@@ -37,6 +37,14 @@ public final class AnimationCache {
     /** 玩家 → 该玩家身上各时装的动画状态。 */
     private static final Map<UUID, PerPlayer> FRAMES = new ConcurrentHashMap<>();
 
+    /**
+     * 已经告警过"指定动画名不存在"的时装 ID。
+     *
+     * <p>为什么要去重：{@code frameFor} 每帧每玩家每件时装都会调一次，名字写错的包会刷爆日志。
+     * 只记 ID 不记玩家：同一个包被多个人穿也只提醒一次。
+     */
+    private static final Set<String> MISSING_NAME_WARNED = ConcurrentHashMap.newKeySet();
+
     private AnimationCache() {
     }
 
@@ -73,8 +81,20 @@ public final class AnimationCache {
             }
         }
         // 一件时装可能有多个动画：默认播第一个（按 anim.json 的声明顺序 —— 解析端用 LinkedHashMap 保序），
-        // 想指定具体动画可以用 pack.json 的 "animation" 字段指向某个文件（文件名即动画名的一部分）。
-        BedrockAnimation animation = entry.animations().values().iterator().next();
+        // 想指定具体动画用 pack.json / meta.json 的 "animationName"（见 AnimationSelection）。
+        BedrockAnimation animation = AnimationSelection.select(entry.animations(), definition.animationName());
+        if (animation == null) {
+            // 指定了名字但 anim.json 里没有：回退第一个 + 每个时装只告警一次，避免每帧刷日志
+            if (definition.animationName() != null && !definition.animationName().isBlank()
+                    && MISSING_NAME_WARNED.add(cosmeticId)) {
+                VMFashionClient.LOGGER.warn("时装 {} 指定的动画 \"{}\" 不存在，回退播放第一个动画",
+                        cosmeticId, definition.animationName());
+            }
+            animation = AnimationSelection.select(entry.animations(), "");
+        }
+        if (animation == null) {
+            return null;
+        }
         try {
             AnimationFrame frame = AnimationFrame.create(entry.model(), animation);
             PerPlayer target = perPlayer;
@@ -121,6 +141,8 @@ public final class AnimationCache {
     /** 清空（{@code /vmfashion reload} / 资源重载时调用）。 */
     public static void invalidate() {
         FRAMES.clear();
+        // 重载后包可能已经改好，允许重新告警一次
+        MISSING_NAME_WARNED.clear();
     }
 
     /** 当前缓存的动画状态数量（诊断用）。 */
