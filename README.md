@@ -39,15 +39,19 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.0.1.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.1.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
 3. 启动游戏，按 **K** 打开衣柜；或 `/vmfashion list` 看已加载的时装、`/vmfashion equip <id>` 穿上。
-4. 想用云端衣柜：在 `config/vmfashion/config.json` 里填 `apiBaseUrl`，再执行 `/vmfashion login`
+4. 想用云端衣柜：在 `config/vmfashion/config.json` 里填 `apiBaseUrl`
+   （官方实例是 `https://www.venusyu045.cn/api/fashion`），再执行 `/vmfashion login`
    （或 `/vmfashion bind` 绑定网站账号）。
 
 > 首次启动会把内置示例时装包释放到 `config/vmfashion/packs/example/`，开箱即可试穿。
+>
+> **分发方式**：只通过本仓库的 GitHub Releases 发布 jar + sources jar（**不上架 Modrinth / CurseForge**），
+> 面向朋友间自用与朋友服务器的推广；服务端不需要装任何东西。
 
 ## 环境
 
@@ -118,7 +122,7 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 | `renderOtherPlayers` | `true` | 是否渲染其他玩家（本地玩家第三人称始终渲染） |
 | `renderDistance` | `64` | 渲染距离（方块），`<=0` 表示不限制 |
 | `scale` | `1.0` | 全局模型缩放（与每件时装自己的 `scale` 相乘） |
-| `apiBaseUrl` | `""` | 时装后端地址，如 `https://vmtools.example.com/api/fashion`；留空 = 纯本地 |
+| `apiBaseUrl` | `""` | 时装后端地址，官方实例 `https://www.venusyu045.cn/api/fashion`；留空 = 纯本地 |
 | `syncEnabled` | `true` | 云端同步开关（需要 `apiBaseUrl` 非空） |
 | `authServer` | `""` | 皮肤站 Yggdrasil 地址；留空则自动从 authlib-injector 的 `-javaagent:` 参数探测 |
 | `refreshIntervalSeconds` | `45` | 其他玩家穿戴的定时刷新间隔（秒），`0` = 关闭 |
@@ -153,10 +157,14 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 **绑定到网站账号**（想在网页衣柜里换装时用）：
 
 1. 游戏内执行 `/vmfashion bind`，聊天栏会显示 6 位绑定码（10 分钟有效，一次性）；
-2. 打开站点 `时装绑定` 页（`/fashion/bind`），输入这个码；
-3. 绑定成功后，网页衣柜和游戏内 mod 共用同一份穿戴配置（一个网站账号可绑多个 MC 账号）。
+2. 打开站点 `时装绑定` 页（官方实例：`https://www.venusyu045.cn/fashion/bind`），输入这个码；
+3. 绑定成功后，网页衣柜（`/fashion/wardrobe`）和游戏内 mod 共用同一份穿戴配置
+   （一个网站账号可绑多个 MC 账号）。
 
-接口契约见 [`docs/fashion-api.md`](docs/fashion-api.md)（自建后端时参考）。
+> 站点管理员还有 `/fashion/admin` 管理端（目录 / 资产 / 时装包），用于发布时装包与缩略图；
+> 普通玩家没有上传入口 —— 时装包只由管理员发布，避免自定义模型带来的内容审核问题。
+> 自建后端时这些页面同样可用，接口契约见 [`docs/fashion-api.md`](docs/fashion-api.md)。
+
 排障见 [`docs/troubleshooting.md`](docs/troubleshooting.md)，架构与数据流见 [`docs/architecture.md`](docs/architecture.md)，
 参与开发见 [`CONTRIBUTING.md`](CONTRIBUTING.md)。
 

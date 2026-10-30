@@ -1,6 +1,9 @@
-# Modrinth / CurseForge 发布文案
+# Modrinth / CurseForge 发布文案（备用，暂不上架）
 
 > 这份文件是**发布时复制粘贴用**的文案草稿，不参与构建。改版本号时记得同步。
+>
+> **当前分发策略（2026-10-30 决定）**：只通过本仓库的 **GitHub Releases** 分发 jar + sources jar，
+> **不发布到 Modrinth / CurseForge** —— 目前面向朋友间自用与朋友服务器推广。本文案留作将来要上架时备用。
 
 ## 基本信息
 
