@@ -30,17 +30,25 @@ require() {
     fi
 }
 
-# 元数据与资源：缺任何一个都会让玩家侧体验残缺（无图标 / 无语言 / 无示例包）
+# 元数据与资源：缺任何一个都会让玩家侧体验残缺（无图标 / 无语言 / 无内置官方包）
 require "fabric.mod.json"
 require "vmfashion.mixins.json"
 require "assets/vmfashion/icon.png"
 require "assets/vmfashion/lang/en_us.json"
 require "assets/vmfashion/lang/zh_cn.json"
-require "assets/vmfashion/default_pack/pack.json"
-require "assets/vmfashion/default_pack/cosmetics/crown/model.geo.json"
-require "assets/vmfashion/default_pack/cosmetics/crown/texture.png"
-require "assets/vmfashion/default_pack/cosmetics/crown/anim.json"
-require "assets/vmfashion/default_pack/cosmetics/backboard/anim.json"
+require "assets/vmfashion/official_pack/pack.json"
+require "assets/vmfashion/official_pack/cosmetics/dragon_wings/model.geo.json"
+require "assets/vmfashion/official_pack/cosmetics/dragon_wings/texture.png"
+require "assets/vmfashion/official_pack/cosmetics/dragon_wings/emissive.png"
+require "assets/vmfashion/official_pack/cosmetics/dragon_wings/anim.json"
+
+# v1.2.1 起不再内置示例包（示例背板 / 示例皇冠），防止误打包回去
+if printf '%s\n' "$LIST" | grep -q 'assets/vmfashion/default_pack/'; then
+    echo "  [FAIL] jar 里仍有已删除的示例包 assets/vmfashion/default_pack/" >&2
+    FAIL=1
+else
+    echo "  [OK]   已移除示例包"
+fi
 
 # 版本占位符必须被 processResources 展开
 if unzip -p "$JAR" fabric.mod.json | grep -q '\${version}'; then

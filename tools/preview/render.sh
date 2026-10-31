@@ -2,7 +2,7 @@
 # 无头时装预览渲染器：把时装包里的 Bedrock 模型渲染成 PNG 效果图（无显卡 / 无客户端）。
 #
 # 用法：bash tools/preview/render.sh <包目录> <cosmeticId> <输出目录> [额外参数...]
-# 例子：bash tools/preview/render.sh src/main/resources/assets/vmfashion/default_pack crown build/preview/crown
+# 例子：bash tools/preview/render.sh src/main/resources/assets/vmfashion/official_pack dragon_wings build/preview/dragon_wings
 #
 # 额外参数（都可选）：
 #   --ss=2              超采样倍数（1..4，默认 2，越大越抗锯齿但越慢）

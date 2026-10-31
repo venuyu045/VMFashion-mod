@@ -26,7 +26,7 @@ import java.util.Set;
  * {@code cape}、动画里写 {@code Cape}）在 JUnit 里测不出来 —— 那边没有真实模型。
  * 这里用示例包做端到端检查，同时验证采样数值（t=0.6 时背板应该转到 -3.5°）。
  *
- * <p>用法：{@code java VerifyAnimation <default_pack 目录>}
+ * <p>用法：{@code java VerifyAnimation <sample_pack 目录>}
  */
 public final class VerifyAnimation {
 
@@ -34,7 +34,7 @@ public final class VerifyAnimation {
 
     public static void main(String[] args) throws Exception {
         Path packDir = Path.of(args.length > 0 ? args[0]
-                : "src/main/resources/assets/vmfashion/default_pack");
+                : "tools/verify/fixtures/sample_pack");
 
         check("背板动画", packDir.resolve("cosmetics/backboard/anim.json"),
                 packDir.resolve("cosmetics/backboard/model.geo.json"));

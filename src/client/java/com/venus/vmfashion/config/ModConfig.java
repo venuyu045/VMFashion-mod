@@ -48,6 +48,19 @@ public class ModConfig {
 
     // ==================== 配置项 ====================
 
+    /**
+     * 官方时装后端地址（部署在项目主服务器上，填到 {@code /api/fashion} 这一级）。
+     *
+     * <p>v1.2.1 起作为默认值：装好 mod 不用改任何配置就能用云端衣柜。
+     * 想用自建后端改 {@code config.json} 的 {@code apiBaseUrl}；想纯本地就把地址清空。
+     */
+    public static final String DEFAULT_API_BASE_URL = "https://www.venusyu045.cn/api/fashion";
+
+    /** 配置结构版本；老配置没有这个字段（Gson 保留默认值 1），用于一次性迁移。 */
+    private int configVersion = 1;
+    /** 当前配置结构版本：2 = 默认后端地址从「留空」改成官方实例。 */
+    private static final int CURRENT_CONFIG_VERSION = 2;
+
     // UI 缩放比例 (0.5 - 2.0)
     private float uiScale = 1.0f;
 
@@ -73,8 +86,8 @@ public class ModConfig {
 
     // ==================== 同步配置 ====================
 
-    // 时装后端地址，例如 https://vmtools.example.com/api/fashion；留空 = 纯本地模式
-    private String apiBaseUrl = "";
+    // 时装后端地址，默认官方实例；留空 = 纯本地模式
+    private String apiBaseUrl = DEFAULT_API_BASE_URL;
 
     // 是否启用云端同步（需要 apiBaseUrl 且认证成功；关闭后完全离线）
     private boolean syncEnabled = true;
@@ -144,6 +157,28 @@ public class ModConfig {
         authServer = authServer == null ? "" : authServer.trim();
         refreshIntervalSeconds = Math.max(0, Math.min(3600, refreshIntervalSeconds));
         maxPackCacheMb = Math.max(0, Math.min(8192, maxPackCacheMb));
+        migrateLegacyDefaults();
+    }
+
+    /**
+     * 老配置一次性迁移到新的默认后端地址。
+     *
+     * <p>v1.2.0 及更早的默认值是"留空 = 纯本地"，而 {@link #save()} 会把所有字段写进
+     * {@code config.json}，所以老玩家的文件里是一个显式的 {@code "apiBaseUrl": ""}。
+     * 只改字段初始值的话，这些文件读出来仍然是空地址、永远连不上官方后端。
+     *
+     * <p>迁移只做一次（靠 {@code configVersion} 判定）：补完地址后写入版本 2，
+     * 玩家之后主动清空地址就会保持纯本地，不会被反复填回来。
+     */
+    private void migrateLegacyDefaults() {
+        if (configVersion >= CURRENT_CONFIG_VERSION) {
+            return;
+        }
+        if (apiBaseUrl.isEmpty()) {
+            apiBaseUrl = DEFAULT_API_BASE_URL;
+            VMFashionClient.LOGGER.info("旧配置未设置后端地址，已迁移到官方实例 {}", DEFAULT_API_BASE_URL);
+        }
+        configVersion = CURRENT_CONFIG_VERSION;
     }
 
     /**
@@ -151,6 +186,8 @@ public class ModConfig {
      */
     public void save() {
         try {
+            // 落盘时写当前结构版本：新装用户第一次保存就是 v2，不会在下次启动时再走迁移分支
+            configVersion = CURRENT_CONFIG_VERSION;
             Files.createDirectories(CONFIG_PATH.getParent());
             Files.writeString(CONFIG_PATH, GSON.toJson(this));
         } catch (IOException e) {

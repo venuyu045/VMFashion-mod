@@ -465,21 +465,18 @@ class PackLoaderTest {
     // ==================== 真实内置包 ====================
 
     @Test
-    void loadsBundledDefaultPack() {
+    void loadsBundledOfficialPack() {
         // reload(root) 的 root 是"包含多个包目录"的父目录，所以这里给 assets/vmfashion
         Path bundledRoot = Path.of("src/main/resources/assets/vmfashion");
-        assumeTrue(Files.isDirectory(bundledRoot.resolve("default_pack")), "不在项目根目录下运行，跳过");
+        assumeTrue(Files.isDirectory(bundledRoot.resolve("official_pack")), "不在项目根目录下运行，跳过");
 
         PackLoader.LoadResult result = PackLoader.reload(bundledRoot);
 
-        // v1.3 起内置两个包：default_pack（示例，id=example）+ official_pack（官方，id=official）
-        assertEquals(2, result.packs().size(), result.warnings().toString());
-        assertEquals(3, result.cosmeticCount(), result.warnings().toString());
-        CosmeticDefinition crown = CosmeticRegistry.getInstance().find("example:crown");
-        assertNotNull(crown);
-        assertSame(CosmeticCategory.HAT, crown.category());
-        assertEquals("head", crown.attachedBone());
-        assertEquals("example:backboard", CosmeticRegistry.getInstance().find("backboard").id());
+        // v1.2.1 起只内置官方包（id=official）：示例包 example（背板 + 皇冠）已从 jar 里移除
+        assertEquals(1, result.packs().size(), result.warnings().toString());
+        assertEquals(1, result.cosmeticCount(), result.warnings().toString());
+        assertNull(CosmeticRegistry.getInstance().find("example:crown"));
+        assertNull(CosmeticRegistry.getInstance().find("example:backboard"));
 
         // 官方包的「深渊龙翼」：wings 分类 → 默认挂 body，并且声明了要播的动画名
         CosmeticDefinition wings = CosmeticRegistry.getInstance().find("official:dragon_wings");

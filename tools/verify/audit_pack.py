@@ -7,7 +7,7 @@
     python3 tools/verify/audit_pack.py <包目录或 zip> [选项]
 
     # 例：审计内置示例包（应当全绿）
-    python3 tools/verify/audit_pack.py src/main/resources/assets/vmfashion/default_pack
+    python3 tools/verify/audit_pack.py src/main/resources/assets/vmfashion/official_pack
 
     # 例：审计待发布的新时装包，并断言 packId / 分类
     python3 tools/verify/audit_pack.py build/packs/dragon_wings.zip \\
@@ -15,7 +15,7 @@
 
     # 例：比对线上下载的 zip 与本地目录内容是否逐字节一致（第二轮发布核验用）
     python3 tools/verify/audit_pack.py /tmp/dl/dragon_wings.zip \\
-        --compare src/main/resources/assets/vmfashion/default_pack/cosmetics/dragon_wings
+        --compare src/main/resources/assets/vmfashion/official_pack/cosmetics/dragon_wings
 
 退出码：0 = 无 ERROR（可能带 WARN）；1 = 有 ERROR；2 = 用法 / IO 错误。
 

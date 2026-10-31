@@ -3,7 +3,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.2.0-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.2.1-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
@@ -39,20 +39,22 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.2.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.2.1.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
 3. 启动游戏，按 **K** 打开衣柜；或 `/vmfashion list` 看已加载的时装、`/vmfashion equip <id>` 穿上。
-4. 想用云端衣柜：在 `config/vmfashion/config.json` 里填 `apiBaseUrl`
-   （官方实例是 `https://www.venusyu045.cn/api/fashion`），再执行 `/vmfashion login`
-   （或 `/vmfashion bind` 绑定网站账号）。
+4. 云端衣柜**默认已开启**，内置官方后端 `https://www.venusyu045.cn/api/fashion`：
+   进服后会自动认证；也可以用 `/vmfashion login` 手动重新认证、
+   `/vmfashion bind` 绑定网站账号。想用自建后端就改 `config/vmfashion/config.json`
+   的 `apiBaseUrl`；想纯本地就把地址清空。
 
-> 首次启动会把两个内置时装包释放到 `config/vmfashion/packs/`：
-> `example/`（示例背板 + 示例皇冠，用来验证渲染链路）与
+> 首次启动会把内置官方时装包释放到 `config/vmfashion/packs/`：
 > `official/`（官方时装：**深渊龙翼** `official:dragon_wings`，`wings` 分类，带 4 段扇骨 + 扇贝翼膜 + 前缘发光棱 + 扇翅动画）。
-> 两个包的释放规则：目录不存在 → 释放；已存在 → 只有 jar 里的版本比本地 `pack.json` 的
+> 释放规则：目录不存在 → 释放；已存在 → 只有 jar 里的版本比本地 `pack.json` 的
 > `version` 更新时才覆盖（本地清单读不出来就不动，避免冲掉你改过的包）。
+> v1.2.1 起不再内置示例包（示例背板 / 示例皇冠），启动时会自动删掉旧版本释放的
+> `packs/example/`。
 >
 > **分发方式**：只通过本仓库的 GitHub Releases 发布 jar + sources jar（**不上架 Modrinth / CurseForge**），
 > 面向朋友间自用与朋友服务器的推广；服务端不需要装任何东西。
@@ -118,7 +120,9 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 
 ## 配置
 
-`config/vmfashion/config.json`（缺失字段自动用默认值，旧文件可以直接升级）：
+`config/vmfashion/config.json`（缺失字段自动用默认值，旧文件可以直接升级；
+v1.2.0 及更早版本里留空的 `apiBaseUrl` 会在升级后**自动补成官方实例**，只迁移一次——
+迁移后你主动清空地址就会保持纯本地，不会再被填回来）：
 
 | 字段 | 默认值 | 说明 |
 |------|--------|------|
@@ -126,7 +130,7 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 | `renderOtherPlayers` | `true` | 是否渲染其他玩家（本地玩家第三人称始终渲染） |
 | `renderDistance` | `64` | 渲染距离（方块），`<=0` 表示不限制 |
 | `scale` | `1.0` | 全局模型缩放（与每件时装自己的 `scale` 相乘） |
-| `apiBaseUrl` | `""` | 时装后端地址，官方实例 `https://www.venusyu045.cn/api/fashion`；留空 = 纯本地 |
+| `apiBaseUrl` | `https://www.venusyu045.cn/api/fashion` | 时装后端地址，默认官方实例；留空 = 纯本地 |
 | `syncEnabled` | `true` | 云端同步开关（需要 `apiBaseUrl` 非空） |
 | `authServer` | `""` | 皮肤站 Yggdrasil 地址；留空则自动从 authlib-injector 的 `-javaagent:` 参数探测 |
 | `refreshIntervalSeconds` | `45` | 其他玩家穿戴的定时刷新间隔（秒），`0` = 关闭 |
@@ -138,7 +142,7 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 
 ## 云端同步
 
-配置了 `apiBaseUrl` 之后，模组会在**进服时**自动完成认证，然后：
+`apiBaseUrl` 非空时（默认就是官方后端），模组会在**进服时**自动完成认证，然后：
 
 - 先 `GET /loadout/me` 拉取自己在网站衣柜保存的穿戴（**云端为准**，绝不拿本地空状态覆盖）；
 - 用 `POST /loadouts/resolve` 批量拉取同服玩家的穿戴（缓存 5 分钟、超过 200 个 UUID 自动分块，

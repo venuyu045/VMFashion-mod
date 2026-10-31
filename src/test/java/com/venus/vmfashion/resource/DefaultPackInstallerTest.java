@@ -61,6 +61,45 @@ class DefaultPackInstallerTest {
         assertFalse(DefaultPackInstaller.isBundledNewer(bundled, missing), "jar 清单缺失 → 不覆盖");
     }
 
+    // ==================== 旧版示例包清理（v1.2.1） ====================
+
+    @Test
+    void removesLegacyBundledSamplePack(@TempDir Path dir) throws Exception {
+        Path packs = dir.resolve("packs");
+        Path sample = packs.resolve("example");
+        writeSampleManifest(sample, "{\"id\": \"example\", \"author\": \"VMFashion\", \"version\": \"1.0.0\"}");
+        Files.createDirectories(sample.resolve("cosmetics/crown"));
+        Files.writeString(sample.resolve("cosmetics/crown/model.geo.json"), "{}", StandardCharsets.UTF_8);
+
+        assertTrue(DefaultPackInstaller.removeLegacySamplePack(packs), "旧版内置示例包应当被删除");
+        assertFalse(Files.exists(sample), "示例包目录应被整个删掉");
+    }
+
+    @Test
+    void keepsPlayerOwnedOrBrokenExamplePack(@TempDir Path dir) throws Exception {
+        Path packs = dir.resolve("packs");
+        Path modified = packs.resolve("example");
+        // 玩家改过作者的包不是"我们释放的那份"，不能删
+        writeSampleManifest(modified, "{\"id\": \"example\", \"author\": \"someone-else\"}");
+        assertFalse(DefaultPackInstaller.removeLegacySamplePack(packs));
+        assertTrue(Files.exists(modified.resolve("pack.json")));
+
+        // 清单坏掉时也不动（避免误删玩家内容）
+        Files.writeString(modified.resolve("pack.json"), "{ not json", StandardCharsets.UTF_8);
+        assertFalse(DefaultPackInstaller.removeLegacySamplePack(packs));
+        assertTrue(Files.exists(modified.resolve("pack.json")));
+    }
+
+    @Test
+    void ignoresMissingLegacySamplePack(@TempDir Path dir) {
+        assertFalse(DefaultPackInstaller.removeLegacySamplePack(dir.resolve("packs")));
+    }
+
+    private static void writeSampleManifest(Path dir, String json) throws Exception {
+        Files.createDirectories(dir);
+        Files.writeString(dir.resolve("pack.json"), json, StandardCharsets.UTF_8);
+    }
+
     private static Path writeManifest(Path dir, String version) throws Exception {
         Files.createDirectories(dir);
         Path manifest = dir.resolve("pack.json");

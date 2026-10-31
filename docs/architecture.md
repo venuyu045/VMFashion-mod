@@ -72,7 +72,7 @@ com.venus.vmfashion
 ├── gui/                       衣柜界面（WardrobeScreen + 组件 + 快捷键 K）
 ├── ui/UIState                 ui_state.json（窗口位置 / 上次分类）
 ├── resource/
-│   ├── DefaultPackInstaller   首次启动释放内置示例包
+│   ├── DefaultPackInstaller   释放内置官方包 + 清理旧版示例包
 │   └── ClientResourceReloader F3+T 资源重载也刷新时装缓存
 ├── util/                      ChatUtil / FileUtil / HashUtil
 └── integration/ModMenuIntegration  Mod Menu 的「配置」按钮（可选依赖）
@@ -86,7 +86,7 @@ com.venus.vmfashion
 
 ```
 1. ModConfig.load()                       读 config.json（缺失/坏文件 → 默认配置，不崩）
-2. DefaultPackInstaller.installIfMissing() 首次启动把 jar 里的示例包释放到 packs/example/
+2. DefaultPackInstaller.installIfMissing() 释放/更新内置官方包到 packs/official/，并清掉旧版释放的 packs/example/
 3. PackLoader.reload()                    扫 packs/ + packs/server/，刷新 CosmeticRegistry
 4. LoadoutStore.loadInto(LocalLoadout)    读 loadout.json（重启不丢穿戴）
 5. CosmeticAssets.invalidate()            清上一轮的模型/贴图缓存（此时还没有内容）

@@ -113,7 +113,7 @@
 ### 3.1 新建模型
 
 1. Blockbench → **New Project** → 选 **Bedrock Entity** 格式（不要选 Java Block/Item，也不要选只做贴图的格式）。
-2. 建议先摆一个原版玩家模型当比例参照（Blockbench 自带 Player Model 模板；也可以直接打开内置示例包
+2. 建议先摆一个原版玩家模型当比例参照（Blockbench 自带 Player Model 模板；也可以直接打开仓库里的示例 fixture
    `config/vmfashion/packs/example/cosmetics/crown/model.geo.json` 对着改），做完后删掉参考模型。
 3. 记住三条坐标系约定（**这是最容易错的地方**）：
    - **原点在玩家脚底**，Y 轴**向上**；
@@ -188,7 +188,7 @@
 - 不允许绝对路径、不允许 `..` 逃出包目录（会被拒绝并记警告 `模型文件不存在`）；
 - 显式写了路径但文件不存在 → 这件时装被跳过。
 
-### 4.3 完整示例（对应内置示例包）
+### 4.3 完整示例（对应 `tools/verify/fixtures/sample_pack/`，旧内置示例包保留作自检用）
 
 ```json
 {
@@ -493,7 +493,7 @@ mod 只认 **Bedrock `format_version 1.12.0`** 的几何格式，且必须包含
 }
 ```
 
-> 上面是内置示例包里皇冠的「上下浮动 + 左右摇摆」动画，可以直接对照。
+> 上面是示例 fixture 里皇冠的「上下浮动 + 左右摇摆」动画，可以直接对照。
 > 关键帧值必须是**纯数字**（旋转单位是度）—— molang 表达式不支持，见下表。
 
 **支持的能力**：

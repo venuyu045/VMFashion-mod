@@ -58,7 +58,7 @@ VMFashion 是**纯客户端模组**，构建产物 `vmfashion-mc26.3-<version>.j
 
 | 文件 | 说明 | 许可证 |
 |---|---|---|
-| `src/main/resources/assets/vmfashion/default_pack/**` | 内置示例时装包（`example`：背板 + 皇冠的模型与贴图） | MIT（本项目原创） |
+| `src/main/resources/assets/vmfashion/official_pack/**` | 内置官方时装包（`official`：深渊龙翼的模型 / 贴图 / 发光层 / 动画） | MIT（本项目原创） |
 | `src/main/resources/assets/vmfashion/icon.png` | 模组图标，由 `tools/dev/make-icon.py` 纯代码生成 | MIT（本项目原创） |
 | `src/main/resources/assets/vmfashion/lang/*.json` | 中英文文案 | MIT |
 

@@ -29,7 +29,7 @@ mkdir -p "$OUT"
 
 echo "=== 1/7 渲染链路（烘焙 / 顶点 / attachedBone）==="
 "$JAVA_HOME/bin/java" -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp "$CP:$OUT" Verify \
-  "$MOD_DIR/src/main/resources/assets/vmfashion/default_pack"
+  "$MOD_DIR/tools/verify/fixtures/sample_pack"
 
 echo "=== 2/7 mixin 目标方法 ==="
 "$JAVA_HOME/bin/java" -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp "$CP:$OUT" VerifyMixins \
@@ -46,7 +46,7 @@ echo "=== 4/7 emissive 遮罩（逐 quad 过滤）==="
 # 5/5：anim.json 能解析，且动画里的骨骼名在烘焙后的模型里真的存在（§3.1）
 echo "=== 5/7 动画解析（骨骼名对得上模型）==="
 "$JAVA_HOME/bin/java" -Dfile.encoding=UTF-8 -Dstdout.encoding=UTF-8 -Dstderr.encoding=UTF-8 -cp "$CP:$OUT" VerifyAnimation \
-  "$MOD_DIR/src/main/resources/assets/vmfashion/default_pack"
+  "$MOD_DIR/tools/verify/fixtures/sample_pack"
 
 # 6/6：第一人称坐标系（证明 applyModelSpace + applyAttachment 可直接复用）
 echo "=== 6/7 第一人称坐标系 ==="

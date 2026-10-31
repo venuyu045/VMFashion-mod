@@ -3,22 +3,39 @@
 本文件格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.2.1] - 2026-10-31
+
+修复版：衣柜分类栏 / 卡片左键点不动、默认连不上官方后端，并清掉内置示例包。
+
+### 修复
+
+- **衣柜分类栏和时装卡片左键点击无效**：26.3 的鼠标事件由 SDL3 上报，按钮编号从 1 开始
+  （左 1 / 中 2 / 右 3），而 `WardrobeScreen` 仍按 GLFW 的 0 判定左键，导致自定义绘制的
+  分类 tab 与卡片把所有左键点击都吞掉（原版 Button 不受影响，因为它们按原版
+  `AbstractWidget#isValidClickButton` 判定）。现在按 1 判定，左侧分类栏、中间卡片都能正常点选。
+- **默认连不上官方后端**：`apiBaseUrl` 的默认值从「留空」改成官方实例
+  `https://www.venusyu045.cn/api/fashion`，装好 mod 就能用云端衣柜；老配置里的空地址会在
+  启动时一次性迁移（写入 `configVersion=2`，之后玩家主动清空就保持纯本地，不会被反复填回）。
+- **删除内置示例包**：jar 里不再打包 `default_pack`（示例背板 / 示例皇冠），启动时会自动
+  删除旧版本释放到 `config/vmfashion/packs/example/` 的那份（只删 `id=example` 且
+  `author=VMFashion` 的清单，玩家自己的包不碰）。
+
+### 变更
+
+- 无头自检改用 `tools/verify/fixtures/sample_pack/`：原示例包保留为测试 fixture，
+  不再随 jar 分发、也不再释放到玩家目录。
 
 ### 新增
 
-- **官方时装包 `official`（深渊龙翼）**：内置第二个时装包
-  `assets/vmfashion/official_pack/`（packId=`official`），首件时装
-  `official:dragon_wings`（分类 `wings`，挂 `body`）。做法是「整块 alpha 裁形的翼膜贴图板 +
-  独立翼骨 + emissive 前缘发光棱 + `flap` / `idle` 两段 Bedrock 动画」；翼膜外形
-  （扇形、指间扇贝弧、拖尾）直接画在 256×256 贴图的 alpha 通道里，靠 `cutout` 裁出平滑轮廓，
-  而不是用一堆小方块拼扇骨。`DefaultPackInstaller` 改为按清单释放多个内置包，
-  老玩家本地没有 `official/` 时会自动补上（新时装塞进已存在的 `example/` 包会被本地旧包盖住，
-  所以单独一个包 ID）。
+- **官方时装包 `official`（深渊龙翼）**：内置时装包 `assets/vmfashion/official_pack/`
+  （packId=`official`），首件时装 `official:dragon_wings`（分类 `wings`，挂 `body`）。
+  做法是「整块 alpha 裁形的翼膜贴图板 + 独立翼骨 + emissive 前缘发光棱 + `flap` / `idle`
+  两段 Bedrock 动画」；翼膜外形（扇形、指间扇贝弧、拖尾）直接画在 256×256 贴图的 alpha
+  通道里，靠 `cutout` 裁出平滑轮廓，而不是用一堆小方块拼扇骨。
 - **内置包改为按版本更新**：`DefaultPackInstaller` 原来「本地有 `pack.json` 就跳过」，
   而内置包落在**用户包目录**（`AssetSyncService` 对用户包永不下载/永不更新）—— 官方包以后
   在网站上升级，玩家更新 jar 也拿不到新内容（审计 v1.3 R1）。现在改为「jar 里的 `version`
-  严格更新才覆盖」，本地清单读不出来（被手改坏）一律不动；新增 3 条单测覆盖版本比较与覆盖判定。
+  严格更新才覆盖」，本地清单读不出来（被手改坏）一律不动；新增单测覆盖版本比较与覆盖判定。
 - **无头效果图渲染器 `tools/preview/`**：无显卡环境下用**生产代码**烘焙 + 渲染时装模型
   （GeckoLib 烘焙 → `GeoModelRenderer` 出顶点 → 纯 CPU 软光栅出 PNG），支持多视角、
   动画帧、商店缩略图，并输出包围盒 / 对称性 / 贴图自检报告。
@@ -26,6 +43,8 @@
   走站点管理端 API 上传包 + 缩略图 + 目录条目，并回读校验 sha256 / 字节数。
 - **模型生成脚本 `tools/dev/gen_dragon_wings.py`**：龙翼几何 / 贴图 / 发光层 / 动画全部由脚本
   参数化生成（左右镜像、角度符号换算都在脚本里），改一个参数就能重出整套资源。
+
+## [Unreleased]
 
 ### 计划中
 

@@ -83,7 +83,7 @@
 | 现象 | 原因 | 修法 |
 |---|---|---|
 | 第一人称看不到 | ① 时装挂在 `head`/`body` 上（第一人称只渲染 `right_arm`/`left_arm` 挂件）；② 手里拿着物品（原版空手才画手臂） | 空手 + 换一件 `attachedBone` 为手臂的时装验证 |
-| 别人身上有，自己身上没有 | 纯本地模式（没配 `apiBaseUrl`）时"别人"渲染的是**你自己的**穿戴，容易看反 | `/vmfashion debug` 看自己的 UUID 那条 |
+| 别人身上有，自己身上没有 | 纯本地模式（把 `apiBaseUrl` 清空了）时"别人"渲染的是**你自己的**穿戴，容易看反 | `/vmfashion debug` 看自己的 UUID 那条 |
 | 周围有，远处没有 | 渲染距离默认 **64 格** | `config.json` 里调大 `renderDistance`（`<= 0` 表示不限制） |
 | 全部时装都不见了 | 配置里 `enabled=false` | 改成 `true`，`/vmfashion config reload` |
 | 隐身药水/旁观时没有时装 | 隐身状态不渲染（和原版披风/盔甲层一致） | 正常现象 |
@@ -105,7 +105,7 @@
 | 以上都对但还是不动 | 多半用到了**不支持的动画特性**（molang 表达式 / `timeline` / `animation_controllers` / `catmullrom`），见 [pack-format.md §9](pack-format.md#9-动画文件) 里的「不支持」表；换成纯数字关键帧即可 |
 
 > 想确认解析结果：`/vmfashion reload` 后用 `logs/latest.log` 搜 `动画`；
-> 或直接用示例包 `config/vmfashion/packs/example/cosmetics/crown/anim.json` 对照格式。
+> 或直接对照 `config/vmfashion/packs/official/cosmetics/dragon_wings/anim.json` 的格式。
 
 ---
 
@@ -183,10 +183,12 @@
 /vmfashion status
 ```
 
-- `同步：纯本地模式（未配置后端）` → `config.json` 里 `apiBaseUrl` 是空的；
+- `同步：纯本地模式（未配置后端）` → `config.json` 里 `apiBaseUrl` 被清空了（v1.2.1 起默认是官方实例；
+  老版本升级上来的空地址会自动补一次官方地址，之后你再清空就不会被填回）；
 - `同步：已配置后端 <url>，尚未登录` → 地址有了，但还没认证成功（执行 `/vmfashion login`）；
 - `同步：已登录 <名字>（authType）→ <url>` → 这一行正常，问题不在认证；
-- 填法（注意是**到 `/api/fashion` 这一级**，末尾斜杠会被自动去掉）：
+- 默认地址就是官方实例 `https://www.venusyu045.cn/api/fashion`，一般不用改；
+  自建后端才需要填（注意是**到 `/api/fashion` 这一级**，末尾斜杠会被自动去掉）：
 
 ```json
 {
@@ -261,7 +263,7 @@
 | 输出 | 含义 | 怎么办 |
 |---|---|---|
 | `已在配置中关闭（downloadServerPacks=false）` | 配置关了 | 改成 `true` + `/vmfashion config reload` |
-| `未配置后端地址` | 纯本地模式 | 填 `apiBaseUrl` |
+| `未配置后端地址` | 纯本地模式（`apiBaseUrl` 被清空） | 填 `apiBaseUrl`，或保持清空 |
 | `后端未提供 /packs，已禁用` | 后端没实现包清单接口 | 让服主升级后端；本地已装的包仍可用 |
 | `N 个包 / X MB · 队列 M · 清单 K` | 正常工作 | 队列 M 长时间不降 → 看日志里的下载失败原因 |
 | `未启用` | 服务未初始化 | 重启游戏 |
@@ -349,7 +351,7 @@
 | `renderOtherPlayers` | `true` | 是否渲染其他玩家身上的时装 |
 | `renderDistance` | `64.0` | 渲染距离（格）。`<= 0` 表示不限制，上限 512 |
 | `scale` | `1.0` | 全局缩放，会乘到每件时装自己的 `scale` 上（0.05 ~ 8.0） |
-| `apiBaseUrl` | `""` | 时装后端地址（留空 = 纯本地模式），例如 `https://example.com/api/fashion`。**v1.2.0 起必须是 `https`**（`http://localhost`/`127.0.0.1` 回环除外）：明文 http 不会收到 Bearer token，同步层报 `insecure_backend` |
+| `apiBaseUrl` | `https://www.venusyu045.cn/api/fashion` | 时装后端地址（官方实例，v1.2.1 起为默认值；留空 = 纯本地模式），例如 `https://example.com/api/fashion`。**v1.2.0 起必须是 `https`**（`http://localhost`/`127.0.0.1` 回环除外）：明文 http 不会收到 Bearer token，同步层报 `insecure_backend` |
 | `syncEnabled` | `true` | 云端同步开关（需要 `apiBaseUrl` 且认证成功） |
 | `authServer` | `""` | 皮肤站 Yggdrasil 地址；留空则从 `-javaagent:authlib-injector` 参数自动探测 |
 | `refreshIntervalSeconds` | `45` | 其他玩家穿戴的定时刷新间隔（秒），`0` 关闭（0 ~ 3600） |

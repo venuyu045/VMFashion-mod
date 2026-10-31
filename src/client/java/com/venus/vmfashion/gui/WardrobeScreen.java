@@ -83,7 +83,16 @@ public final class WardrobeScreen extends Screen {
     private static final int PREVIEW_THUMB_MAX = 72;
     private static final int SCROLL_STEP = 24;
     private static final int MAX_SEARCH_LENGTH = 48;
-    private static final int LEFT_BUTTON = 0;
+    /**
+     * 鼠标左键的按钮编号。
+     *
+     * <p>26.3 的鼠标事件由 SDL3 上报，按钮编号从 <b>1</b> 开始（左 1 / 中 2 / 右 3），
+     * 不再是 GLFW 的 0/2/1。原版 {@code AbstractWidget#isValidClickButton} 同样只认 1。
+     * 之前这里写 0，导致自定义绘制的分类 tab 和卡片把所有左键点击都判成"不是左键"直接吞掉
+     * （原版 Button 不受影响，因为它们按 {@code isValidClickButton} 判定），表现就是
+     * 左侧分类栏和中间卡片点了没反应。
+     */
+    private static final int LEFT_BUTTON = 1;
 
     /** 每帧最多新烘焙多少件时装的资源（模型 + 贴图）。 */
     private static final int MAX_BAKES_PER_FRAME = 2;

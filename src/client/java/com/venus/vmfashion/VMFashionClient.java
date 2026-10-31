@@ -41,7 +41,7 @@ public class VMFashionClient implements ClientModInitializer {
         // 初始化配置（缺失字段自动用默认值，兼容旧 config.json）
         config = ModConfig.load();
 
-        // 首次启动时把 jar 里的示例时装包释放到 config/vmfashion/packs/example/
+        // 释放 jar 里的内置时装包到 config/vmfashion/packs/，并清掉旧版释放的示例包
         DefaultPackInstaller.installIfMissing();
 
         // 加载时装包（config/vmfashion/packs/）
