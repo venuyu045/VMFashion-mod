@@ -462,7 +462,7 @@ class PackLoaderTest {
         assertEquals(100.0F, result.packs().get(0).cosmetics().get(0).scale(), 1e-6);
     }
 
-    // ==================== 真实示例包 ====================
+    // ==================== 真实内置包 ====================
 
     @Test
     void loadsBundledDefaultPack() {
@@ -472,13 +472,22 @@ class PackLoaderTest {
 
         PackLoader.LoadResult result = PackLoader.reload(bundledRoot);
 
-        assertEquals(1, result.packs().size(), result.warnings().toString());
-        assertEquals(2, result.cosmeticCount());
+        // v1.3 起内置两个包：default_pack（示例，id=example）+ official_pack（官方，id=official）
+        assertEquals(2, result.packs().size(), result.warnings().toString());
+        assertEquals(3, result.cosmeticCount(), result.warnings().toString());
         CosmeticDefinition crown = CosmeticRegistry.getInstance().find("example:crown");
         assertNotNull(crown);
         assertSame(CosmeticCategory.HAT, crown.category());
         assertEquals("head", crown.attachedBone());
         assertEquals("example:backboard", CosmeticRegistry.getInstance().find("backboard").id());
+
+        // 官方包的「深渊龙翼」：wings 分类 → 默认挂 body，并且声明了要播的动画名
+        CosmeticDefinition wings = CosmeticRegistry.getInstance().find("official:dragon_wings");
+        assertNotNull(wings, result.warnings().toString());
+        assertSame(CosmeticCategory.WINGS, wings.category());
+        assertEquals("body", wings.attachedBone());
+        assertEquals("深渊龙翼", wings.name());
+        assertEquals("animation.vmfashion.dragon_wings.flap", wings.animationName());
     }
 
     // ==================== 材质 / 动画名（v1.1） ====================

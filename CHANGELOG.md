@@ -5,6 +5,28 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **官方时装包 `official`（深渊龙翼）**：内置第二个时装包
+  `assets/vmfashion/official_pack/`（packId=`official`），首件时装
+  `official:dragon_wings`（分类 `wings`，挂 `body`）。做法是「整块 alpha 裁形的翼膜贴图板 +
+  独立翼骨 + emissive 前缘发光棱 + `flap` / `idle` 两段 Bedrock 动画」；翼膜外形
+  （扇形、指间扇贝弧、拖尾）直接画在 256×256 贴图的 alpha 通道里，靠 `cutout` 裁出平滑轮廓，
+  而不是用一堆小方块拼扇骨。`DefaultPackInstaller` 改为按清单释放多个内置包，
+  老玩家本地没有 `official/` 时会自动补上（新时装塞进已存在的 `example/` 包会被本地旧包盖住，
+  所以单独一个包 ID）。
+- **内置包改为按版本更新**：`DefaultPackInstaller` 原来「本地有 `pack.json` 就跳过」，
+  而内置包落在**用户包目录**（`AssetSyncService` 对用户包永不下载/永不更新）—— 官方包以后
+  在网站上升级，玩家更新 jar 也拿不到新内容（审计 v1.3 R1）。现在改为「jar 里的 `version`
+  严格更新才覆盖」，本地清单读不出来（被手改坏）一律不动；新增 3 条单测覆盖版本比较与覆盖判定。
+- **无头效果图渲染器 `tools/preview/`**：无显卡环境下用**生产代码**烘焙 + 渲染时装模型
+  （GeckoLib 烘焙 → `GeoModelRenderer` 出顶点 → 纯 CPU 软光栅出 PNG），支持多视角、
+  动画帧、商店缩略图，并输出包围盒 / 对称性 / 贴图自检报告。
+- **时装包发布脚本 `tools/publish/publish_pack.py`**：把包目录打成可复现的 zip（固定时间戳）、
+  走站点管理端 API 上传包 + 缩略图 + 目录条目，并回读校验 sha256 / 字节数。
+- **模型生成脚本 `tools/dev/gen_dragon_wings.py`**：龙翼几何 / 贴图 / 发光层 / 动画全部由脚本
+  参数化生成（左右镜像、角度符号换算都在脚本里），改一个参数就能重出整套资源。
+
 ### 计划中
 
 - 官方签名公钥接入（后端生成密钥对 → 替换内置常量 → 官方后端开 `requireSignature`）

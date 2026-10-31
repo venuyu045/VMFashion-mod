@@ -48,7 +48,11 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
    （官方实例是 `https://www.venusyu045.cn/api/fashion`），再执行 `/vmfashion login`
    （或 `/vmfashion bind` 绑定网站账号）。
 
-> 首次启动会把内置示例时装包释放到 `config/vmfashion/packs/example/`，开箱即可试穿。
+> 首次启动会把两个内置时装包释放到 `config/vmfashion/packs/`：
+> `example/`（示例背板 + 示例皇冠，用来验证渲染链路）与
+> `official/`（官方时装：**深渊龙翼** `official:dragon_wings`，`wings` 分类，带 4 段扇骨 + 扇贝翼膜 + 前缘发光棱 + 扇翅动画）。
+> 两个包的释放规则：目录不存在 → 释放；已存在 → 只有 jar 里的版本比本地 `pack.json` 的
+> `version` 更新时才覆盖（本地清单读不出来就不动，避免冲掉你改过的包）。
 >
 > **分发方式**：只通过本仓库的 GitHub Releases 发布 jar + sources jar（**不上架 Modrinth / CurseForge**），
 > 面向朋友间自用与朋友服务器的推广；服务端不需要装任何东西。

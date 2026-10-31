@@ -1,0 +1,23 @@
+{
+  "formatVersion": 1,
+  "id": "official",
+  "name": "VMFashion 官方时装包",
+  "version": "1.0.0",
+  "author": "VMFashion",
+  "license": "MIT",
+  "cosmetics": [
+    {
+      "id": "dragon_wings",
+      "name": "深渊龙翼",
+      "category": "wings",
+      "attachedBone": "body",
+      "model": "cosmetics/dragon_wings/model.geo.json",
+      "texture": "cosmetics/dragon_wings/texture.png",
+      "emissive": "cosmetics/dragon_wings/emissive.png",
+      "scale": 1.0,
+      "material": "cutout",
+      "animation": "cosmetics/dragon_wings/anim.json",
+      "animationName": "animation.vmfashion.dragon_wings.flap"
+    }
+  ]
+}
