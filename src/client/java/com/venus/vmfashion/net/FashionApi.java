@@ -32,6 +32,9 @@ public final class FashionApi {
     private static final Duration REQUEST_TIMEOUT = Duration.ofSeconds(15);
     /** 批量查询穿戴的端点：唯一允许重试的 POST（查询语义、幂等）。 */
     private static final String RESOLVE_PATH = "/loadouts/resolve";
+    /** "明文后端已停止携带 token" 的 warn 只打一次（每次 config reload 会重建实例，最多各一次）。 */
+    private static final java.util.concurrent.atomic.AtomicBoolean INSECURE_WARNED =
+            new java.util.concurrent.atomic.AtomicBoolean();
 
     private final HttpClient http = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
@@ -270,6 +273,15 @@ public final class FashionApi {
             String current = token;
             if (current == null || current.isBlank()) {
                 throw new ApiException(401, "no_token", "尚未登录时装后端");
+            }
+            if (!PackDownloader.isSecureUrl(baseUrl)) {
+                // 明文 http（非本机回环）绝不带 Bearer：宁可直接失败，也不把登录凭据发到网上。
+                // 用 400 而不是 -1：400 不计入熔断、也不触发重试/重新认证（否则会每 5 秒认证一次）。
+                if (INSECURE_WARNED.compareAndSet(false, true)) {
+                    VMFashionClient.LOGGER.warn("时装后端地址不是 https（{}），出于安全已停止发送登录凭据；"
+                            + "请把 apiBaseUrl 改成 https 地址（本机回环除外）", baseUrl);
+                }
+                throw new ApiException(400, "insecure_backend", "后端地址不是 https，出于安全已停止发送登录凭据");
             }
             builder.header("Authorization", "Bearer " + current);
         }

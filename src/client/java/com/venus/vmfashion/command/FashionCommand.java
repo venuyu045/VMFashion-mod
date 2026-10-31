@@ -124,6 +124,9 @@ public final class FashionCommand {
         AssetSyncService assets = AssetSyncService.getInstance();
         source.sendFeedback(feedback("vmfashion.command.status.assets",
                 safeComponent(assets::describeStatus)));
+        // 验签策略与最近一次结果（audit v1.2 N18）：公钥是否已替换、是否严格模式，一眼可见
+        source.sendFeedback(feedback("vmfashion.command.status.signature",
+                safeComponent(assets::describeSignaturePolicy)));
 
         CosmeticRegistry registry = CosmeticRegistry.getInstance();
         source.sendFeedback(feedback("vmfashion.command.status.packs",
@@ -203,7 +206,12 @@ public final class FashionCommand {
         return 1;
     }
 
-    /** 清空服务端下发的时装包缓存（用户自己装的包不受影响）。 */
+    /**
+     * 清空服务端下发的时装包缓存（用户自己装的包不受影响）。
+     *
+     * <p>磁盘删除在 worker 线程做（audit v1.2 N02），所以这里只回"已开始清理"，
+     * 完成提示（删了多少 / 释放多少）由 {@link AssetSyncService#clearCache()} 自己发到聊天栏。
+     */
     private static int cacheClear(FabricClientCommandSource source) {
         AssetSyncService assets = AssetSyncService.getInstance();
         long before = safeCacheBytes(assets);
@@ -214,7 +222,7 @@ public final class FashionCommand {
             source.sendFeedback(feedback("vmfashion.command.cache_clear_failed", String.valueOf(t)));
             return 0;
         }
-        source.sendFeedback(feedback("vmfashion.command.cache_cleared", DiagExporter.humanBytes(before)));
+        source.sendFeedback(feedback("vmfashion.command.cache_clearing", DiagExporter.humanBytes(before)));
         return 1;
     }
 

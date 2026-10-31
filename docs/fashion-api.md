@@ -81,7 +81,7 @@ Authorization: Bearer <token>        # 可选：清单一般公开，带了也�
 | `version` | string | ✅ | 包版本，≤ 64 字符。客户端**每次清单刷新都会对比**：`sha256` 变了 → 重下并替换；sha256 相同但版本号变了 → 不重下（内容没变）；两者都缺时保守不动（避免无标记老包每次进服重下）。v1.1.0 起真正生效，1.0.x 只看"本地有没有" |
 | `sha256` | string | ✅ | 整包 zip 的 sha256，**64 位 hex（大小写均可，建议小写）**。没有可信哈希的条目会被丢弃（客户端拒绝下载无法校验的包） |
 | `bytes` | number | ✅ | zip 的**精确字节数**，必须 > 0。客户端边下边校验，多了立刻中断 |
-| `url` | string | ⬜ | 下载地址。可绝对（`https://cdn...`）也可相对（`/packs/{id}/{version}/download`）；**留空时客户端按相对地址拼** |
+| `url` | string | ⬜ | 下载地址。可绝对（`https://cdn...`）也可相对（`/packs/{id}/{version}/download`）；**留空时客户端按相对地址拼**。⚠️ v1.2.0 起绝对地址**必须是 `https`**（`http://localhost` / `127.0.0.1` / `[::1]` 回环除外）：清单本身未签名，明文下载地址等于把「装什么内容」交给中间人，非安全地址会被直接拒绝（见 §2 第 6 条） |
 | `publishedAt` | number | ⬜ | 发布时间（毫秒时间戳），仅用于展示/排查 |
 | `signature` | string | ⬜（见 §6） | Ed25519 签名，标准 base64（非 URL-safe），覆盖 `packId + "\n" + version + "\n" + sha256` 的 UTF-8 字节；**缺失时客户端默认放行并记一次 warn**，严格模式拒绝 |
 | `signingKeyId` | string | ⬜ | 签发密钥的 `keyId`，对应客户端 `trusted_keys.json` 里的 `id`；留空时客户端用**任意一把**受信公钥尝试 |
@@ -125,6 +125,11 @@ Authorization: Bearer <token>        # 仅当 URL 与 apiBaseUrl 同源时才会
 3. **`Content-Type`**：`application/zip`（或 `application/octet-stream`）。
 4. **不支持 Range / 断点续传**（客户端每次整包下载）。
 5. **`ETag` / `Last-Modified` 可选**，客户端不发送条件请求。
+6. **必须是 `https`**（v1.2.0 起）：相对地址拼出来的绝对地址、以及清单里的绝对 `url`，
+   scheme 不是 `https` 且 host 不是本机回环（`localhost` / `127.0.0.1` / `[::1]`）时，
+   客户端**拒绝下载**并在日志里说明原因。同一条规则也管 `apiBaseUrl`：
+   明文 http 后端不会收到 `Authorization`（客户端直接报 `insecure_backend` 并只 warn 一次），
+   目的是不让 Bearer token 在局域网/公网上被中间人读到。
 
 ### zip 结构要求
 
@@ -363,6 +368,9 @@ def sign_pack(private_key_pem: bytes, pack_id: str, version: str, zip_bytes: byt
 - `/packs/{id}/{version}/download` 建议**公开**，否则 CDN 无法直出；
 - 若必须鉴权：客户端只在 **URL 与 `apiBaseUrl` 同源**时带 `Authorization: Bearer <token>`，
   绝对地址指向第三方时**绝不带 token**（防泄漏）；
+- **明文 http 一律不带凭据**（v1.2.0 起）：`apiBaseUrl` 不是 `https` 且不是本机回环时，
+  客户端不发送 `Authorization`，同步层会报 `insecure_backend` 并 warn 一次
+  （下载 URL 同理，见 §2 第 6 条）；
 - token 由现有 `/auth/*` 流程签发，有效期 24h，过期后同步层会自动重新认证。
 
 ---
@@ -424,6 +432,7 @@ curl -s -X POST "$BASE/loadouts/resolve" \
 | `trusted_keys.json` 缺失或损坏 | 回退内置占位公钥 + 宽松模式；带签名的包会因"无匹配公钥"被拒，无签名的包照常放行 |
 | `resolve` 缺 `packId` | 退化为按 `cosmeticId` 前缀推导 packId，仍可工作 |
 | `downloadServerPacks=false`（配置） | 整个服务空转：零请求、零磁盘写入 |
+| 清单 `url` / `apiBaseUrl` 是明文 http（非回环） | 拒绝下载 / 不发送 `Authorization`，日志 warn 一次；同步层报 `insecure_backend`，改 `https` 即恢复 |
 
 ---
 

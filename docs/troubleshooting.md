@@ -349,7 +349,7 @@
 | `renderOtherPlayers` | `true` | 是否渲染其他玩家身上的时装 |
 | `renderDistance` | `64.0` | 渲染距离（格）。`<= 0` 表示不限制，上限 512 |
 | `scale` | `1.0` | 全局缩放，会乘到每件时装自己的 `scale` 上（0.05 ~ 8.0） |
-| `apiBaseUrl` | `""` | 时装后端地址（留空 = 纯本地模式），例如 `https://example.com/api/fashion` |
+| `apiBaseUrl` | `""` | 时装后端地址（留空 = 纯本地模式），例如 `https://example.com/api/fashion`。**v1.2.0 起必须是 `https`**（`http://localhost`/`127.0.0.1` 回环除外）：明文 http 不会收到 Bearer token，同步层报 `insecure_backend` |
 | `syncEnabled` | `true` | 云端同步开关（需要 `apiBaseUrl` 且认证成功） |
 | `authServer` | `""` | 皮肤站 Yggdrasil 地址；留空则从 `-javaagent:authlib-injector` 参数自动探测 |
 | `refreshIntervalSeconds` | `45` | 其他玩家穿戴的定时刷新间隔（秒），`0` 关闭（0 ~ 3600） |

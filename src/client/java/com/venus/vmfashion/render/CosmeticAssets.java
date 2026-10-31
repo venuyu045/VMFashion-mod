@@ -161,8 +161,21 @@ public final class CosmeticAssets {
 
     // ==================== 内部 ====================
 
+    /**
+     * 单个模型允许的四边形总数上限（audit v1.2 N06）。
+     *
+     * <p>解压侧只限制字节数（单文件 64MB），对"合法但灾难性"的几何文件没有约束：
+     * 一个几十 MB 的 geo.json 可以在渲染线程上烘出上百万顶点、把 1–2GB 的堆打爆。
+     * 20000 个 quad 已经是正常时装的上百倍，超过就按坏模型处理（跳过 + 记日志 + 5 分钟冷却）。
+     */
+    static final int MAX_QUADS = 20_000;
+
     private static Entry load(CosmeticDefinition definition) throws Exception {
         BakedGeoModel model = bakeModel(definition);
+        int quads = countQuads(model.topLevelBones());
+        if (quads > MAX_QUADS) {
+            throw new IllegalStateException("模型四边形数超限: " + quads + " > " + MAX_QUADS);
+        }
         Identifier texture = registerTexture(definition, definition.textureFile(), "texture");
         Identifier emissive = definition.emissiveFile() == null
                 ? null

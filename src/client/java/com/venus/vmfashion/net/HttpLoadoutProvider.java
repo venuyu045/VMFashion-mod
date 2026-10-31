@@ -39,6 +39,13 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
 
     /** 后端建议 5s、客户端 5 分钟；这里取 5 分钟，玩家换装会在下一次刷新时体现。 */
     private static final long CACHE_TTL_MS = 5 * 60 * 1000L;
+    /**
+     * "后端没给这个 UUID 的任何数据"的负缓存时长（audit v1.2 N03）。
+     *
+     * <p>比正常缓存短得多：玩家刚在网站登录/认证完，最多 45 秒后就能被重新问到；
+     * 但足够挡住"渲染层每帧查一次 → 每秒一次 POST"的请求风暴。
+     */
+    private static final long NEGATIVE_TTL_MS = 45_000L;
     /** 后端单次请求接受的 UUID 上限。 */
     private static final int MAX_BATCH = 200;
 
@@ -62,11 +69,30 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
         CompletableFuture<Boolean> reauthenticate();
     }
 
-    private record Entry(Map<String, WornCosmetic> loadout, long fetchedAt) {
+    /**
+     * 一条缓存。
+     *
+     * @param negative {@code true} = 负缓存（后端对这次请求既没给 loadout 也没给 missing），
+     *                 用更短的 TTL 失效，避免"永远查不到、永远每秒重查"
+     */
+    private record Entry(Map<String, WornCosmetic> loadout, long fetchedAt, boolean negative) {
 
         boolean fresh(long now) {
-            return now - fetchedAt < CACHE_TTL_MS;
+            return isFresh(negative, fetchedAt, now);
         }
+    }
+
+    /**
+     * 缓存条目是否仍新鲜（纯逻辑，可单测）：负缓存用 {@link #NEGATIVE_TTL_MS}。
+     *
+     * <p>{@code now - fetchedAt} 为负（系统时间回拨）时按"过期"处理，宁可多查一次。
+     */
+    static boolean isFresh(boolean negative, long fetchedAt, long now) {
+        long age = now - fetchedAt;
+        if (age < 0) {
+            return false;
+        }
+        return age < (negative ? NEGATIVE_TTL_MS : CACHE_TTL_MS);
     }
 
     public HttpLoadoutProvider(FashionApi api) {
@@ -181,7 +207,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                 }
                 try {
                     Map<String, WornCosmetic> loadout = parseItems(entry.getValue());
-                    cache.put(uuid, new Entry(loadout, now));
+                    cache.put(uuid, new Entry(loadout, now, false));
                     result.put(uuid, loadout);
                 } catch (Exception e) {
                     VMFashionClient.LOGGER.debug("跳过无法解析的穿戴条目 {}: {}", uuid, e.toString());
@@ -196,7 +222,7 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                     if (uuid != null) {
                         // 未认证的玩家当作"没有穿戴"，同样缓存，避免每帧重复请求
                         Map<String, WornCosmetic> empty = Map.of();
-                        cache.put(uuid, new Entry(empty, now));
+                        cache.put(uuid, new Entry(empty, now, false));
                         result.put(uuid, empty);
                     }
                 } catch (Exception ignored) {
@@ -204,6 +230,33 @@ public final class HttpLoadoutProvider implements LoadoutProvider {
                 }
             }
         }
+
+        // 负缓存：响应里既没有 loadout 也没有 missing 的 UUID（后端省略 missing 的常见实现）。
+        // 不缓存的话渲染层每帧都会重新请求，退化成"每秒一次 POST"（audit v1.2 N03）。
+        for (UUID uuid : absentFromResponse(requested, result)) {
+            Map<String, WornCosmetic> empty = Map.of();
+            cache.put(uuid, new Entry(empty, now, true));
+            result.put(uuid, empty);
+        }
+    }
+
+    /**
+     * 响应里既没有 {@code loadouts} 也没有 {@code missing} 的 UUID（纯逻辑，可单测）。
+     *
+     * <p>抽成静态方法是为了让单测不用起 HTTP、也不用碰 Minecraft 类。
+     */
+    static List<UUID> absentFromResponse(List<UUID> requested,
+                                         Map<UUID, Map<String, WornCosmetic>> result) {
+        List<UUID> absent = new ArrayList<>();
+        if (requested == null) {
+            return absent;
+        }
+        for (UUID uuid : requested) {
+            if (uuid != null && (result == null || !result.containsKey(uuid))) {
+                absent.add(uuid);
+            }
+        }
+        return absent;
     }
 
     /**

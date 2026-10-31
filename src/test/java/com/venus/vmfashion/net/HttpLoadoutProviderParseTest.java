@@ -155,4 +155,33 @@ class HttpLoadoutProviderParseTest {
         JsonObject empty = HttpLoadoutProvider.buildUploadBody(null);
         assertEquals(0, empty.getAsJsonArray("items").size());
     }
+
+    // ==================== 负缓存（audit v1.2 N03） ====================
+
+    private static final java.util.UUID A = java.util.UUID.fromString("069a79f4-44e9-4726-a5be-fca90e38aaf5");
+    private static final java.util.UUID B = java.util.UUID.fromString("11111111-2222-3333-4444-555555555555");
+
+    @Test
+    void absentUuidsBecomeNegativeCacheCandidates() {
+        Map<java.util.UUID, Map<String, WornCosmetic>> result = new LinkedHashMap<>();
+        result.put(A, Map.of());
+        assertEquals(java.util.List.of(B),
+                HttpLoadoutProvider.absentFromResponse(java.util.List.of(A, B), result));
+        assertTrue(HttpLoadoutProvider.absentFromResponse(null, result).isEmpty());
+        assertEquals(java.util.List.of(A), HttpLoadoutProvider.absentFromResponse(java.util.List.of(A), null));
+    }
+
+    @Test
+    void negativeEntriesExpireFasterThanRealOnes() {
+        long now = 1_000_000L;
+        // 正常条目：5 分钟
+        assertTrue(HttpLoadoutProvider.isFresh(false, now - 60_000L, now));
+        assertFalse(HttpLoadoutProvider.isFresh(false, now - 6 * 60_000L, now));
+        // 负缓存：45 秒（避免"永远查不到、永远每秒重查"）
+        assertTrue(HttpLoadoutProvider.isFresh(true, now - 30_000L, now));
+        assertFalse(HttpLoadoutProvider.isFresh(true, now - 60_000L, now));
+        // 系统时间回拨（now < fetchedAt）按过期处理，宁可多查一次
+        assertFalse(HttpLoadoutProvider.isFresh(true, now + 10_000L, now));
+        assertFalse(HttpLoadoutProvider.isFresh(false, now + 10_000L, now));
+    }
 }

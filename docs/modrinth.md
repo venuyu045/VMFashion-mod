@@ -57,6 +57,24 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 | GeckoLib | `5.5.7` |
 | Mod Menu（可选） | `21.0.0` |
 
+## 版本亮点（v1.2.0 可直接用）
+
+```
+## v1.2.0 — 不再"静默失败"
+
+- 同步失败会说人话了：后端 5xx / 未知错误码不再静默，聊天栏提示
+  「本次改动可能没有保存，请稍后重试」（15 秒去重，不刷屏）
+- 修掉一个不可自愈的缓存竞态：LRU 淘汰撞上安装窗口时，那件时装本会话会永久不显示
+- /vmfashion cache clear 不再卡主线程（挪到 IO 线程，完成后报清理量）
+- 衣柜逐件状态：下载中 "…"、失败 "!" 可重试，穿上失败改成错误提示
+- 安全：明文 http 后端不再收到 Bearer token；下载地址只接受 https（本机回环除外）
+- 远程包加模型复杂度上限（4 MB / 20000 quad），坏包不再可能卡死渲染线程
+- /vmfashion status 与 diag 能看到验签策略与最近结论
+- 单测 255 → 265
+
+行为变更：apiBaseUrl 若是明文 http（非 localhost），同步会明确报 insecure_backend —— 改 https 即恢复。
+```
+
 ## 版本亮点（v1.1.0 可直接用）
 
 ```
@@ -122,7 +140,7 @@ Blockbench / Bedrock 3D outfits — capes, wings, hats, back items, pets — on 
 
 ## 检查清单（发布前）
 
-- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 255 条单测）
+- [ ] `bash tools/dev/gradle.sh clean build --offline` 通过（含 265 条单测）
 - [ ] `bash tools/verify/run.sh` 7 步全过
 - [ ] `bash tools/dev/check-jar.sh` / `check-mod-json.sh` / `check-lang.sh` 全过
 - [ ] `bash tools/dev/list-i18n-todo.sh --count` = 0

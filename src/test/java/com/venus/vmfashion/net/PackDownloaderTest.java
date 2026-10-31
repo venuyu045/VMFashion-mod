@@ -163,6 +163,26 @@ class PackDownloaderTest {
     }
 
     @Test
+    void rejectsPlaintextHttpExceptLoopback() {
+        // audit v1.2 N05：清单未签名，明文 http 下载地址等于把"装什么内容"交给中间人。
+        // 只放行 https 与本机回环。
+        assertNull(PackDownloader.resolveUri("http://cdn.example.com/x.zip", "https://api.example.com"));
+        assertNull(PackDownloader.resolveUri("/packs/a", "http://192.168.1.10:8080/api/fashion"));
+        assertEquals(URI.create("http://localhost:8080/packs/a"),
+                PackDownloader.resolveUri("http://localhost:8080/packs/a", "https://api.example.com"));
+        assertEquals(URI.create("http://127.0.0.1:8080/api/fashion/packs/a"),
+                PackDownloader.resolveUri("/packs/a", "http://127.0.0.1:8080/api/fashion"));
+
+        assertTrue(PackDownloader.isSecureUrl("https://api.example.com/x"));
+        assertTrue(PackDownloader.isSecureUrl("http://localhost:8080/x"));
+        assertTrue(PackDownloader.isSecureUrl(URI.create("http://[::1]:8080/x")));
+        assertFalse(PackDownloader.isSecureUrl("http://api.example.com/x"));
+        assertFalse(PackDownloader.isSecureUrl("ftp://api.example.com/x"));
+        assertFalse(PackDownloader.isSecureUrl((String) null));
+        assertFalse(PackDownloader.isSecureUrl(""));
+    }
+
+    @Test
     void tokenOnlySentToSameOrigin() {
         assertTrue(PackDownloader.sameOrigin(URI.create("https://api.example.com/packs/a/download"),
                 "https://api.example.com/api/fashion"));

@@ -437,7 +437,13 @@ public final class SyncService {
             case "circuit_open" -> Component.translatable("vmfashion.error.circuit_open");
             case "bad_json" -> Component.translatable("vmfashion.error.bad_json");
             case "bad_asset_key" -> Component.translatable("vmfashion.error.bad_asset_key");
-            default -> null;
+            // 明文 http 后端：客户端拒绝发送登录凭据（audit v1.2 N05）
+            case "insecure_backend" -> Component.translatable("vmfashion.error.insecure_backend");
+            // 兜底（audit v1.2 N01）：5xx 与后端新增的未知错误码以前会落 null → 玩家侧完全静默，
+            // 换装"提示成功"却没保存。现在至少给一条"可能没保存、可重试"，去重由 notifyError 负责。
+            default -> apiException.status() >= 500
+                    ? Component.translatable("vmfashion.error.server_unavailable", apiException.status())
+                    : Component.translatable("vmfashion.error.unexpected", code.isBlank() ? "?" : code);
         };
     }
 

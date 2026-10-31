@@ -18,6 +18,7 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 import net.minecraft.resources.Identifier;
 
 import java.util.ArrayList;
@@ -103,8 +104,23 @@ public final class WardrobeScreen extends Screen {
     /** 打开时间，用于 {@code animationDuration} 淡入。 */
     private final long openedAtMs = System.currentTimeMillis();
 
-    /** 已解析出来的缩略图（时装 ID → 贴图 ID，失败存 {@code null}，避免每帧重试）。 */
+    /** 已解析出来的缩略图（时装 ID → 贴图 ID；失败不写这里，见 {@link #thumbFailures}）。 */
     private final Map<String, Identifier> thumbnails = new HashMap<>();
+
+    /**
+     * 缩略图加载失败的记录（时装 ID → 失败时间戳），用来显示"加载失败"角标并允许稍后重试
+     * （audit v1.2 N08）。
+     *
+     * <p>为什么要带时间戳：{@link CosmeticAssets#get} 内部对失败有 5 分钟冷却，界面这里每
+     * {@value #THUMB_RETRY_MS}ms 才重试一次，既不会每帧刷日志，也不至于"一次失败就永久占位"。
+     */
+    private final Map<String, Long> thumbFailures = new HashMap<>();
+    /** 缩略图失败后多久允许重试（毫秒）。 */
+    private static final long THUMB_RETRY_MS = 30_000L;
+    /** 卡片角标：正在下载。 */
+    private static final String PENDING_MARK = "…";
+    /** 卡片角标：加载失败。 */
+    private static final String FAILED_MARK = "!";
 
     /** 左侧分类 tab（"全部"的 category 为 {@code null}）。 */
     private final List<TabEntry> tabs = new ArrayList<>();
@@ -504,11 +520,29 @@ public final class WardrobeScreen extends Screen {
         drawCenteredTruncated(context, cosmetic.name(), x + cardWidth / 2,
                 thumbY + thumbSize + 2, thumbSize, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
 
+        // 状态角标（左上角）：加载失败 "!" / 正在下载 "…"（audit v1.2 N08）
+        if (thumbFailures.containsKey(cosmetic.id())) {
+            context.text(this.font, FAILED_MARK, x + 3, y + 3,
+                    withAlpha(ModConfig.UI.DANGER_COLOR, alpha));
+        } else if (isPackDownloading(cosmetic)) {
+            context.text(this.font, PENDING_MARK, x + 3, y + 3,
+                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+        }
+
         // 已穿标记（右上角）
         if (worn) {
             context.text(this.font, WORN_MARK,
                     x + cardWidth - this.font.width(WORN_MARK) - 3, y + 3,
                     withAlpha(ModConfig.UI.SUCCESS_COLOR, alpha));
+        }
+    }
+
+    /** 这件时装的包是否正在自动下发（"下载中"角标）。别的模块抛异常不能让界面崩。 */
+    private static boolean isPackDownloading(CosmeticDefinition cosmetic) {
+        try {
+            return AssetSyncService.getInstance().isPackPending(cosmetic.packId());
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -571,10 +605,25 @@ public final class WardrobeScreen extends Screen {
         // 两者现在都返回 Component，文案跟着客户端语言走。
         Component syncStatus = safeComponent(() -> SyncService.getInstance().describeStatus());
         Component assetStatus = safeComponent(() -> AssetSyncService.getInstance().describeStatus());
+        // 加载失败的资源数也放进状态行：玩家在界面里就能看到"有几件是坏的"（audit v1.2 N08）
+        MutableComponent assetsLine = Component.translatable("vmfashion.gui.status.assets", assetStatus);
+        int failed = safeFailureCount();
+        if (failed > 0) {
+            assetsLine.append(Component.translatable("vmfashion.gui.status.assets_failed", failed));
+        }
         drawTruncated(context, Component.translatable("vmfashion.gui.status.sync", syncStatus).getString(),
                 textX, top + 3, maxWidth, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
-        drawTruncated(context, Component.translatable("vmfashion.gui.status.assets", assetStatus).getString(),
+        drawTruncated(context, assetsLine.getString(),
                 textX, top + 3 + LINE_HEIGHT, maxWidth, withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+    }
+
+    /** 资源加载失败件数（诊断用）；拿不到就按 0，界面不能因此崩。 */
+    private static int safeFailureCount() {
+        try {
+            return CosmeticAssets.failureCount();
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     // ==================== 交互 ====================
@@ -669,8 +718,23 @@ public final class WardrobeScreen extends Screen {
         LocalLoadout.getInstance().wear(cosmetic);
         // 与 /vmfashion equip 完全一致：本地状态 + 上报后端
         SyncService.getInstance().uploadLocalLoadout();
-        ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped", cosmetic.name()));
+        // 资源加载失败时不能只说"已穿上"：玩家会以为成功了却什么也看不到（audit v1.2 N08）
+        if (assetReady(cosmetic)) {
+            ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped", cosmetic.name()));
+        } else {
+            ToastWidget.showError(Component.translatable("vmfashion.gui.toast.equip_no_asset",
+                    cosmetic.name()));
+        }
         refreshButtons();
+    }
+
+    /** 这件时装的模型/贴图是否已经能加载（会触发首次烘焙，和缩略图同一条路径）。 */
+    private static boolean assetReady(CosmeticDefinition cosmetic) {
+        try {
+            return CosmeticAssets.get(cosmetic) != null;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private void unequipSelected() {
@@ -794,15 +858,25 @@ public final class WardrobeScreen extends Screen {
      * 取一件时装的缩略图；没烘焙过就现烘焙，但受每帧预算限制。
      *
      * <p>{@link CosmeticAssets#get} 会烘焙模型并上传贴图，是"第一次看到才付钱"的操作。
-     * 失败结果也缓存（值为 {@code null}），否则一件坏资源会每帧重试、日志刷屏。
+     * 失败<b>不</b>写进 {@link #thumbnails}（否则一次失败就永久占位），而是记进
+     * {@link #thumbFailures}：界面显示"!"角标，{@value #THUMB_RETRY_MS}ms 后自动重试一次
+     * （audit v1.2 N08）。
      */
     private Identifier thumbnailFor(CosmeticDefinition cosmetic) {
         if (cosmetic == null) {
             return null;
         }
         String key = cosmetic.id();
-        if (thumbnails.containsKey(key)) {
-            return thumbnails.get(key);
+        Identifier cached = thumbnails.get(key);
+        if (cached != null) {
+            return cached;
+        }
+        Long failedAt = thumbFailures.get(key);
+        if (failedAt != null) {
+            if (System.currentTimeMillis() - failedAt < THUMB_RETRY_MS) {
+                return null; // 冷却中：画占位图 + "!" 角标
+            }
+            thumbFailures.remove(key);
         }
         if (bakeBudget <= 0) {
             // 本帧预算用完：先画占位图，下一帧继续
@@ -816,6 +890,11 @@ public final class WardrobeScreen extends Screen {
         } catch (Throwable t) {
             // 单件资源坏掉只影响这一张卡片
             VMFashionClient.LOGGER.warn("衣柜缩略图加载失败 {}: {}", key, t.toString());
+        }
+        if (texture == null) {
+            // 失败（含 CosmeticAssets 内部已吞掉异常返回 null 的情况）：记时间戳，稍后重试
+            thumbFailures.put(key, System.currentTimeMillis());
+            return null;
         }
         thumbnails.put(key, texture);
         return texture;

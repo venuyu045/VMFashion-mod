@@ -158,7 +158,8 @@ public final class PackDownloader {
         }
         URI uri = resolveUri(url, baseUrl);
         if (uri == null) {
-            return CompletableFuture.failedFuture(new DownloadException(FailureReason.IO, "下载地址非法: " + url));
+            return CompletableFuture.failedFuture(new DownloadException(FailureReason.IO,
+                    "下载地址非法（只允许 https，本机回环除外）: " + url));
         }
         HttpRequest.Builder builder;
         try {
@@ -171,8 +172,9 @@ public final class PackDownloader {
             return CompletableFuture.failedFuture(new DownloadException(FailureReason.IO,
                     "下载地址非法: " + uri));
         }
-        // 只有同源才带 token：绝对 URL 可能指向第三方 CDN，绝不能把凭据发过去
-        if (token != null && !token.isBlank() && sameOrigin(uri, baseUrl)) {
+        // 只有"同源 + 目标本身是安全地址"才带 token：绝对 URL 可能指向第三方 CDN，
+        // 而明文 http 的目标可能被中间人读到 Authorization（audit v1.2 N05）。
+        if (token != null && !token.isBlank() && sameOrigin(uri, baseUrl) && isSecureUrl(uri)) {
             builder.header("Authorization", "Bearer " + token);
         }
 
@@ -308,7 +310,7 @@ public final class PackDownloader {
 
     // ==================== 工具 ====================
 
-    /** 相对 URL 用 {@code baseUrl} 补全；绝对 URL 必须是 http(s)。非法返回 {@code null}。 */
+    /** 相对 URL 用 {@code baseUrl} 补全；绝对 URL 必须是 https（本机回环允许 http）。非法返回 {@code null}。 */
     static URI resolveUri(String url, String baseUrl) {
         if (url == null || url.isBlank()) {
             return null;
@@ -340,9 +342,49 @@ public final class PackDownloader {
             if (uri.getHost() == null || uri.getHost().isBlank()) {
                 return null;
             }
+            // 只允许 https（本机回环除外）：清单本身未签名，明文下载地址等于把"装什么内容"
+            // 交给中间人；相对 URL 拼到 http 后端上同样会被拒（audit v1.2 N05）。
+            if (!isSecureUrl(uri)) {
+                return null;
+            }
             return uri;
         } catch (Exception e) {
             return null;
+        }
+    }
+
+    /**
+     * 地址是否安全到可以承载凭据 / 远程内容：{@code https}，或本机回环的 {@code http}。
+     *
+     * <p>与 {@code FashionAuth#validateAuthServer} 的口径保持一致（那边管的是会收到 Minecraft
+     * accessToken 的会话服务器地址，这里管下载 URL 与 {@code Authorization} 头）。
+     */
+    public static boolean isSecureUrl(URI uri) {
+        if (uri == null) {
+            return false;
+        }
+        String scheme = uri.getScheme() == null ? "" : uri.getScheme().toLowerCase(java.util.Locale.ROOT);
+        if ("https".equals(scheme)) {
+            return true;
+        }
+        if (!"http".equals(scheme) || uri.getHost() == null) {
+            return false;
+        }
+        String host = uri.getHost().toLowerCase(java.util.Locale.ROOT);
+        return "localhost".equals(host) || "127.0.0.1".equals(host)
+                || "::1".equals(host) || "[::1]".equals(host)
+                || "0:0:0:0:0:0:0:1".equals(host);
+    }
+
+    /** {@link #isSecureUrl(URI)} 的字符串重载；空白 / 非法 URL 返回 {@code false}。 */
+    public static boolean isSecureUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return false;
+        }
+        try {
+            return isSecureUrl(URI.create(url.trim()));
+        } catch (Exception e) {
+            return false;
         }
     }
 

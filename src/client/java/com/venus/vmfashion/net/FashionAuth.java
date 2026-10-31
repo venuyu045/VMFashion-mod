@@ -118,6 +118,13 @@ public final class FashionAuth {
     }
 
     private CompletableFuture<Session> doAuthenticate(String authServerOverride) {
+        // 明文 http（非本机回环）后端：连认证都不要做 —— /auth/verify 的响应体里就是 token，
+        // 走明文等于把凭据交给中间人。宁可让同步层报"后端地址不是 https"（audit v1.2 N05）。
+        String apiBase = api == null ? "" : api.baseUrl();
+        if (!apiBase.isBlank() && !PackDownloader.isSecureUrl(apiBase)) {
+            return CompletableFuture.failedFuture(new FashionApi.ApiException(400, "insecure_backend",
+                    "时装后端地址不是 https，出于安全已停止发送登录凭据"));
+        }
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft == null) {
             return CompletableFuture.failedFuture(

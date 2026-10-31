@@ -402,6 +402,8 @@ public final class DiagExporter {
         try {
             AssetSyncService assets = AssetSyncService.getInstance();
             out.append("状态: ").append(assets.describeStatus().getString()).append('\n');
+            // 验签策略 / 密钥指纹 / 最近一次结论（audit v1.2 N18）：不输出公钥明文
+            out.append("验签: ").append(assets.describeSignaturePolicy().getString()).append('\n');
             out.append("缓存占用: ").append(assets.cacheBytes()).append(" 字节\n");
             out.append("在飞/排队: ").append(assets.pendingCount()).append('\n');
         } catch (Throwable t) {

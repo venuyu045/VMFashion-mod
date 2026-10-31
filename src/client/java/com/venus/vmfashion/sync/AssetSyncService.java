@@ -13,6 +13,7 @@ import com.venus.vmfashion.net.PackDownloader;
 import com.venus.vmfashion.net.PackSignature;
 import com.venus.vmfashion.net.SafeZip;
 import com.venus.vmfashion.render.CosmeticAssets;
+import com.venus.vmfashion.util.ChatUtil;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
@@ -173,10 +174,15 @@ public final class AssetSyncService {
             new java.util.concurrent.atomic.AtomicLong();
     /** 代次：离服 / 清缓存时 +1，在飞下载的结果据此作废。 */
     private volatile long epoch;
+    /**
+     * 最近一次验签结论（形如 {@code wings@1.2.0 → SIGNED_OK}），只给 {@code /vmfashion status}
+     * 与 diag 展示用（audit v1.2 N18）。worker 线程写、主线程读，字符串引用赋值本身是原子的。
+     */
+    private volatile String lastSignatureResult;
 
     /** 已安装包的元数据。{@code lastUsedAt} 用于 LRU 淘汰。 */
-    private record InstalledPack(String packId, String version, String sha256, long bytes,
-                                 long installedAt, long lastUsedAt) {
+    record InstalledPack(String packId, String version, String sha256, long bytes,
+                         long installedAt, long lastUsedAt) {
     }
 
     private AssetSyncService() {
@@ -423,7 +429,13 @@ public final class AssetSyncService {
 
     // ==================== 状态 / 缓存管理 ====================
 
-    /** 清空服务端下发的包缓存（{@code /vmfashion cache clear}）。 */
+    /**
+     * 清空服务端下发的包缓存（{@code /vmfashion cache clear}）。
+     *
+     * <p>内存状态立刻清掉（界面/命令马上一致），<b>磁盘删除挪到 worker 线程</b>：
+     * 512MB 缓存时递归删除要几百毫秒到数秒，放在客户端主线程上就是假死（audit v1.2 N02）。
+     * 删完回主线程给玩家一条结果提示（删了多少目录 / 释放多少）。
+     */
     public void clearCache() {
         epoch++;
         queue.clear();
@@ -434,24 +446,49 @@ public final class AssetSyncService {
         abortActiveStreams();
         // 用户显式清了缓存：给之前验签失败的包一次重新验证的机会
         rejectedBySignature.clear();
-        int removed = 0;
-        Path serverRoot = PackLoader.serverPacksDir();
-        if (Files.isDirectory(serverRoot)) {
-            try (Stream<Path> children = Files.list(serverRoot)) {
-                for (Path child : children.toList()) {
-                    if (deleteRecursively(child)) {
-                        removed++;
-                    }
-                }
-            } catch (IOException e) {
-                VMFashionClient.LOGGER.warn("清理服务端时装包缓存失败: {}", e.toString());
-            }
-        }
         installed.clear();
-        cachedBytes.set(0L);
+        long beforeBytes = cachedBytes.getAndSet(0L);
         // 包没了，注册表里还留着它们：让主线程下一 tick 重载
         reloadPending.set(true);
-        VMFashionClient.LOGGER.info("已清理服务端时装包缓存：{} 个目录", removed);
+        Path serverRoot = PackLoader.serverPacksDir();
+        Runnable task = () -> {
+            int removed = deleteServerPackDirs(serverRoot);
+            VMFashionClient.LOGGER.info("已清理服务端时装包缓存：{} 个目录（约 {} 字节）", removed, beforeBytes);
+            // ChatUtil 内部会自己 Minecraft#execute 回主线程，且 player 为空时静默丢弃
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.chat.cache_cleared",
+                    removed, humanBytes(beforeBytes)));
+        };
+        ExecutorService executor = ioExecutor;
+        if (executor == null) {
+            // 自动下发没启用（ioExecutor 没建）：没有 worker 可用，只能同步做
+            task.run();
+            return;
+        }
+        try {
+            executor.execute(task);
+        } catch (Throwable t) {
+            // 线程池已关闭（客户端正在退出）：退化成同步删除，别让玩家点了没反应
+            VMFashionClient.LOGGER.debug("清理缓存任务提交失败，改为同步执行: {}", t.toString());
+            task.run();
+        }
+    }
+
+    /** 删除 {@code packs/server/} 下的所有子项（worker 线程执行），返回删掉的目录数。 */
+    private static int deleteServerPackDirs(Path serverRoot) {
+        int removed = 0;
+        if (serverRoot == null || !Files.isDirectory(serverRoot)) {
+            return 0;
+        }
+        try (Stream<Path> children = Files.list(serverRoot)) {
+            for (Path child : children.toList()) {
+                if (deleteRecursively(child)) {
+                    removed++;
+                }
+            }
+        } catch (IOException e) {
+            VMFashionClient.LOGGER.warn("清理服务端时装包缓存失败: {}", e.toString());
+        }
+        return removed;
     }
 
     /**
@@ -500,6 +537,58 @@ public final class AssetSyncService {
     /** 在飞 + 排队中的下载数。 */
     public int pendingCount() {
         return queued.size();
+    }
+
+    /**
+     * 某个包是否正在下载/安装（衣柜卡片显示"下载中"角标用，audit v1.2 N08）。
+     *
+     * <p>渲染线程每帧每张可见卡片调一次：只做一次 {@code toLowerCase} + 集合查询，无磁盘 IO。
+     */
+    public boolean isPackPending(String packId) {
+        if (packId == null || packId.isBlank()) {
+            return false;
+        }
+        return queued.contains(packId.trim().toLowerCase(Locale.ROOT));
+    }
+
+    /**
+     * 验签策略摘要（给 {@code /vmfashion status} 与 diag，audit v1.2 N18）。
+     *
+     * <p>只描述**策略与结果**，不输出公钥明文（最多是 keyId + 指纹前 8 hex）。
+     * 会在必要时读一次 {@code trusted_keys.json}（有 60s 缓存），所以只给命令/诊断路径调用，
+     * 不要放进渲染热路径。
+     */
+    public Component describeSignaturePolicy() {
+        PackSignature.TrustStore trust = trustStore();
+        MutableComponent text = Component.translatable(trust.requireSignature()
+                ? "vmfashion.asset.signature.strict"
+                : "vmfashion.asset.signature.lenient");
+        StringBuilder fingerprints = new StringBuilder();
+        int listed = 0;
+        for (Map.Entry<String, java.security.PublicKey> entry : trust.keys().entrySet()) {
+            if (listed >= 3) {
+                break;
+            }
+            if (listed > 0) {
+                fingerprints.append(", ");
+            }
+            fingerprints.append(entry.getKey()).append(':').append(PackSignature.fingerprint(entry.getValue()));
+            listed++;
+        }
+        text.append(Component.translatable("vmfashion.asset.signature.keys",
+                trust.size(), fingerprints.toString()));
+        if (trust.builtinOnly()) {
+            text.append(Component.translatable("vmfashion.asset.signature.builtin"));
+        }
+        int rejected = rejectedBySignature.size();
+        if (rejected > 0) {
+            text.append(Component.translatable("vmfashion.asset.signature.rejected", rejected));
+        }
+        String last = lastSignatureResult;
+        if (last != null && !last.isBlank()) {
+            text.append(Component.translatable("vmfashion.asset.signature.last", last));
+        }
+        return text;
     }
 
     // ==================== 队列驱动 ====================
@@ -1021,18 +1110,49 @@ public final class AssetSyncService {
                     if (cachedBytes.get() <= budget) {
                         break;
                     }
-                    if (deleteRecursively(PackLoader.serverPacksDir().resolve(pack.packId()))) {
-                        installed.remove(pack.packId().toLowerCase(Locale.ROOT));
-                        cachedBytes.addAndGet(-pack.bytes());
-                        reloadPending.set(true);
-                        VMFashionClient.LOGGER.info("缓存超过 {}MB，淘汰最久未用的包 {}",
-                                budgetMb, pack.packId());
+                    String key = pack.packId().toLowerCase(Locale.ROOT);
+                    if (!isEvictable(installed.get(key), pack, inFlight)) {
+                        // 正在安装/更新，或记录已被新版本替换：这轮跳过，否则会删掉刚装好的目录，
+                        // 留下"installed 有记录、磁盘没目录"的不可自愈状态（audit v1.2 N04）。
+                        continue;
                     }
+                    if (!deleteRecursively(PackLoader.serverPacksDir().resolve(pack.packId()))) {
+                        continue;
+                    }
+                    if (!installed.remove(key, pack)) {
+                        // 值在这两步之间被替换（极端并发）：目录已删但记录是新的，交给下一轮扫描修正
+                        continue;
+                    }
+                    cachedBytes.addAndGet(-pack.bytes());
+                    reloadPending.set(true);
+                    VMFashionClient.LOGGER.info("缓存超过 {}MB，淘汰最久未用的包 {}",
+                            budgetMb, pack.packId());
                 }
             } finally {
                 evicting.set(false);
             }
         });
+    }
+
+    /**
+     * 这条淘汰候选能不能删（纯逻辑，可单测，audit v1.2 N04）。
+     *
+     * <p>两个条件缺一不可：
+     * <ul>
+     *   <li>记录没被替换：{@code current} 必须就是 {@code candidate} 这个实例 ——
+     *       安装线程在"目录已就位、{@code installed} 还没登记"的窗口里，淘汰线程看到的是**旧记录**，
+     *       此时删除会连新目录一起删掉；</li>
+     *   <li>该包不在 {@code inFlight}（正在下载/安装/更新）。</li>
+     * </ul>
+     */
+    static boolean isEvictable(InstalledPack current, InstalledPack candidate, Set<String> inFlight) {
+        if (current == null || candidate == null || current != candidate) {
+            return false;
+        }
+        if (inFlight != null && inFlight.contains(candidate.packId().toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        return true;
     }
 
     // ==================== 验签 ====================
@@ -1052,6 +1172,8 @@ public final class AssetSyncService {
         PackSignature.TrustStore trust = trustStore();
         PackSignature.Decision decision = PackSignature.evaluate(trust, info.id(), info.version(),
                 info.sha256(), info.signature(), info.signingKeyId());
+        // 记下最近一次结论，给 /vmfashion status 与 diag 展示（audit v1.2 N18）
+        lastSignatureResult = info.id() + "@" + info.version() + " → " + decision;
         if (decision == PackSignature.Decision.SIGNED_OK) {
             VMFashionClient.LOGGER.debug("时装包 {} 验签通过（keyId={}）",
                     info.id(), info.signingKeyId() == null || info.signingKeyId().isBlank()

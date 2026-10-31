@@ -560,6 +560,59 @@ class PackLoaderTest {
         assertEquals("", result.packs().get(0).cosmetics().get(0).animationName());
     }
 
+    // ==================== 资源上限 / id 安全（audit v1.2 N06 / N13） ====================
+
+    @Test
+    void skipsOversizedModelFile() throws IOException {
+        // 解压侧只卡字节数（单文件 64MB），这里再加一道"模型文件 4MB"的闸
+        Path pack = createPack("demo", """
+                {"id": "demo", "cosmetics": [{"id": "huge", "category": "hat"}]}
+                """);
+        Path dir = pack.resolve("cosmetics").resolve("huge");
+        Files.createDirectories(dir);
+        Files.write(dir.resolve("model.geo.json"), new byte[(int) PackLoader.MAX_MODEL_BYTES + 16]);
+        writeBytes(dir.resolve("texture.png"));
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals(0, result.cosmeticCount(), result.warnings().toString());
+        assertTrue(hasWarning(result, "模型文件过大"), result.warnings().toString());
+    }
+
+    @Test
+    void rejectsDeclaredIdWithPathSeparators() throws IOException {
+        // 远程 pack.json 的 id 会拼进文件系统路径：含 .. / 分隔符必须拒绝（N13）
+        createPack("demo", """
+                {"id": "demo", "cosmetics": [{"id": "../../evil", "category": "hat"}]}
+                """);
+
+        PackLoader.LoadResult result = PackLoader.reload(root);
+
+        assertEquals(0, result.cosmeticCount(), result.warnings().toString());
+        assertTrue(hasWarning(result, "id 含非法字符"), result.warnings().toString());
+    }
+
+    @Test
+    void safeLocalIdAllowsUnicodeButRejectsPathChars() {
+        assertTrue(PackLoader.isSafeLocalId("crown"));
+        assertTrue(PackLoader.isSafeLocalId("皇冠-1.0"));
+        assertTrue(PackLoader.isSafeLocalId("my hat"));
+        assertFalse(PackLoader.isSafeLocalId("../x"));
+        assertFalse(PackLoader.isSafeLocalId("a/b"));
+        assertFalse(PackLoader.isSafeLocalId("a\\b"));
+        assertFalse(PackLoader.isSafeLocalId("."));
+        assertFalse(PackLoader.isSafeLocalId(".."));
+        assertFalse(PackLoader.isSafeLocalId(""));
+        assertFalse(PackLoader.isSafeLocalId(null));
+    }
+
+    @Test
+    void modelSizeLimitBoundary() {
+        assertFalse(PackLoader.isModelFileTooLarge(0L));
+        assertFalse(PackLoader.isModelFileTooLarge(PackLoader.MAX_MODEL_BYTES));
+        assertTrue(PackLoader.isModelFileTooLarge(PackLoader.MAX_MODEL_BYTES + 1));
+    }
+
     // ==================== 工具 ====================
 
     private void assertAnimationDiscovered(String packDirName, String animationFileName) throws IOException {

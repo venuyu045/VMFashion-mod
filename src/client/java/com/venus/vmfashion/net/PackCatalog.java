@@ -264,7 +264,9 @@ public final class PackCatalog {
             return CompletableFuture.failedFuture(
                     new FashionApi.ApiException(-1, "bad_base_url", "后端地址非法: " + baseUrl));
         }
-        if (token != null && !token.isBlank()) {
+        // 明文 http（非本机回环）不带 token：清单一般是公开的，宁可按匿名请求处理，
+        // 也不要把登录凭据发到可能被监听的连接上（audit v1.2 N05）。
+        if (token != null && !token.isBlank() && PackDownloader.isSecureUrl(baseUrl)) {
             builder.header("Authorization", "Bearer " + token);
         }
         return http.sendAsync(builder.build(), HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))

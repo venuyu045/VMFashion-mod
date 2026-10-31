@@ -57,6 +57,13 @@ public final class PackLoader {
     private static final String EMISSIVE_FILE_NAME = "emissive.png";
     /** 服务端自动下发包的命名空间目录名（{@code packs/server/<packId>/}）。 */
     public static final String SERVER_DIR_NAME = "server";
+    /**
+     * 单个模型文件（{@code *.geo.json}）的大小上限：4MB。
+     *
+     * <p>正常 Blockbench 导出远小于 1MB；解压侧的单文件上限是 64MB，一个"合法但灾难性"的
+     * 几何文件足以让渲染线程烘爆堆，所以这里单独设一道闸（audit v1.2 N06）。
+     */
+    static final long MAX_MODEL_BYTES = 4L * 1024 * 1024;
 
     private PackLoader() {
     }
@@ -276,6 +283,12 @@ public final class PackLoader {
             warnings.add(packId + ": 有一件时装缺少 id，已跳过");
             return null;
         }
+        if (!isSafeLocalId(localId)) {
+            // 远程 pack.json 声明的 id 会拼进文件系统路径与 cosmeticId：含 / \ 或 .. 一律拒绝
+            // （audit v1.2 N13）
+            warnings.add(packId + ": 时装 id 含非法字符（不允许 / \\ 或 ..）: " + localId + "，已跳过");
+            return null;
+        }
         String context = packId + "/" + localId;
 
         Path model = resolveSafe(packDir, optString(meta, "model", ""));
@@ -284,6 +297,13 @@ public final class PackLoader {
         }
         if (model == null || !Files.isRegularFile(model)) {
             warnings.add(context + ": 模型文件不存在");
+            return null;
+        }
+        long modelBytes = fileSizeOrZero(model);
+        if (isModelFileTooLarge(modelBytes)) {
+            // 解压上限只卡字节数，一个 64MB 的 geo.json 能在渲染线程上烘爆堆（audit v1.2 N06）
+            warnings.add(context + ": 模型文件过大（" + modelBytes + " 字节，上限 "
+                    + MAX_MODEL_BYTES + "），已跳过");
             return null;
         }
 
@@ -420,14 +440,30 @@ public final class PackLoader {
 
     /** 声明项对应的单件目录；不存在时返回 {@code null}（资源路径全部由声明项给出）。 */
     private static Path findEntryDir(Path packDir, String localId) {
-        if (localId == null || localId.isBlank()) {
-            return null;
+        if (!isSafeLocalId(localId)) {
+            return null; // 含 / \ 或 .. 的声明 id 不能拼进文件系统路径（audit v1.2 N13）
         }
         Path candidate = packDir.resolve(COSMETICS_DIR_NAME).resolve(localId);
         if (!Files.isDirectory(candidate) || Files.isSymbolicLink(candidate)) {
             return null;
         }
         return candidate;
+    }
+
+    /**
+     * 时装 id 是否可安全用于"目录名 / cosmeticId 片段"。
+     *
+     * <p>只拒绝危险字符（路径分隔符、NUL、{@code .}/{@code ..}），其余（中文、空格、点）全部放行 ——
+     * 这是"黑名单"而不是白名单，不会破坏既有的用户自制包（audit v1.2 N13）。
+     */
+    static boolean isSafeLocalId(String localId) {
+        if (localId == null || localId.isBlank()) {
+            return false;
+        }
+        if (localId.indexOf('/') >= 0 || localId.indexOf('\\') >= 0 || localId.indexOf('\0') >= 0) {
+            return false;
+        }
+        return !".".equals(localId) && !"..".equals(localId);
     }
 
     /** 读取单件目录下的 meta.json；不存在返回 {@code null}，损坏时记警告并忽略。 */
@@ -535,6 +571,20 @@ public final class PackLoader {
     private static boolean looksLikeGeometry(Path model) {
         JsonObject json = readJsonObject(model);
         return json != null && json.has("minecraft:geometry");
+    }
+
+    /** 模型文件是否超过 {@link #MAX_MODEL_BYTES}（纯逻辑，可单测，audit v1.2 N06）。 */
+    static boolean isModelFileTooLarge(long bytes) {
+        return bytes > MAX_MODEL_BYTES;
+    }
+
+    /** 文件大小；读不到按 0 处理（后面的 {@code isRegularFile} 已经保证文件存在）。 */
+    private static long fileSizeOrZero(Path file) {
+        try {
+            return Files.size(file);
+        } catch (IOException e) {
+            return 0L;
+        }
     }
 
     /** 读一个 JSON 对象；文件不存在 / 不是对象 / 解析失败都返回 {@code null}（不抛异常）。 */
