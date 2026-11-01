@@ -11,6 +11,7 @@ import com.venus.vmfashion.cosmetic.CosmeticResourceId;
 import com.venus.vmfashion.cosmetic.LocalLoadout;
 import com.venus.vmfashion.cosmetic.LoadoutStore;
 import com.venus.vmfashion.cosmetic.PackLoader;
+import com.venus.vmfashion.cosmetic.WardrobeCollection;
 import com.venus.vmfashion.render.CosmeticAssets;
 import com.venus.vmfashion.render.EmissiveMask;
 import com.venus.vmfashion.render.FashionRenderState;
@@ -105,6 +106,7 @@ public final class DiagExporter {
         appendLoadout(out);
         appendSync(out);
         appendAssets(out);
+        appendWardrobe(out);
         appendLogTail(out);
 
         Files.writeString(file, out.toString(), StandardCharsets.UTF_8);
@@ -408,6 +410,41 @@ public final class DiagExporter {
             out.append("在飞/排队: ").append(assets.pendingCount()).append('\n');
         } catch (Throwable t) {
             out.append("读取资产状态失败: ").append(t).append('\n');
+        }
+        out.append('\n');
+    }
+
+    /**
+     * 网站衣柜收藏段（v1.3.0 起的新数据链路）。
+     *
+     * <p>为什么要进 diag：「游戏内衣柜里少了 / 多了时装」是这版最容易收到的反馈，
+     * 而"到底是没绑定 / 没拉到 / 后端没这个端点 / 配置关了过滤"从界面上只能看到一句话。
+     * 这里把内存镜像、磁盘缓存、同步层内部状态（在飞 / 退避 / 连续失败 / 端点不支持）一次列全。
+     */
+    private static void appendWardrobe(StringBuilder out) {
+        out.append("==================== 网站衣柜收藏 ====================\n");
+        try {
+            WardrobeCollection collection = WardrobeCollection.getInstance();
+            out.append("linked: ").append(collection.linked())
+                    .append(" / loaded: ").append(collection.loaded())
+                    .append(" / 件数: ").append(collection.size())
+                    .append(" / 已下架(missing): ").append(collection.missingCount()).append('\n');
+            out.append("fetchedAt: ").append(collection.fetchedAtMs())
+                    .append(collection.fetchedAtMs() > 0
+                            ? "（" + Math.max(0L, (System.currentTimeMillis() - collection.fetchedAtMs()) / 1000L)
+                                    + " 秒前）"
+                            : "（从未成功拉取）")
+                    .append('\n');
+            out.append("归属身份: ").append(collection.owner().isEmpty() ? "（未知）" : collection.owner()).append('\n');
+            Path file = WardrobeCollection.file();
+            out.append("缓存文件: ").append(file == null ? "（拿不到配置目录）" : file + "（存在="
+                    + Files.isRegularFile(file) + "）").append('\n');
+            out.append("同步状态: ").append(SyncService.getInstance().describeWardrobeSyncState()).append('\n');
+            out.append("最近刷新结果: ").append(collection.loaded()
+                    ? (collection.linked() ? "按收藏过滤" : "未绑定账号 → 显示本地全部")
+                    : "未加载 → 显示本地全部").append('\n');
+        } catch (Throwable t) {
+            out.append("读取衣柜收藏状态失败: ").append(t).append('\n');
         }
         out.append('\n');
     }

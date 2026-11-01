@@ -237,7 +237,9 @@ public final class PreviewRender {
         }
         // 剪影的角也要入镜，但只算"取景参照"那一块（小配件时玩家剪影被裁到模型附近，
         // 否则皇冠会因为要装下玩家的脚而缩成一个小点）
-        addBoxCorners(fitPoints, contextBox(contentBox));
+        if (!options.tight()) {
+            addBoxCorners(fitPoints, contextBox(contentBox));
+        }
         double[] frameCenter = {frameBox.centerX(), frameBox.centerY(), frameBox.centerZ()};
 
         // ---- 5. 出图 ----
@@ -248,8 +250,10 @@ public final class PreviewRender {
         for (ViewPreset view : views) {
             SoftRasterizer raster = newRaster(options.width(), options.height(), options,
                     frameCenter, fitPoints, view.dirToEye, VIEW_MARGIN, source);
-            raster.fillBackground(BACKGROUND_TOP, BACKGROUND_BOTTOM);
-            drawGroundShadowIfNeeded(raster, groundVisible, contentBox);
+            if (!options.transparent()) {
+                raster.fillBackground(BACKGROUND_TOP, BACKGROUND_BOTTOM);
+                drawGroundShadowIfNeeded(raster, groundVisible, contentBox);
+            }
             raster.drawModel(staticQuads);
             if (options.silhouette) {
                 drawPlayerSilhouette(raster);
@@ -276,8 +280,10 @@ public final class PreviewRender {
         for (int i = 0; i < ANIMATION_FRAMES; i++) {
             SoftRasterizer raster = newRaster(options.width(), options.height(), options,
                     frameCenter, fitPoints, VIEWS.get(0).dirToEye(), VIEW_MARGIN, source);
-            raster.fillBackground(BACKGROUND_TOP, BACKGROUND_BOTTOM);
-            drawGroundShadowIfNeeded(raster, groundVisible, contentBox);
+            if (!options.transparent()) {
+                raster.fillBackground(BACKGROUND_TOP, BACKGROUND_BOTTOM);
+                drawGroundShadowIfNeeded(raster, groundVisible, contentBox);
+            }
             List<QuadRecorder.Quad> quads;
             double time;
             if (pose != null && i < animationQuads.size()) {
@@ -683,11 +689,11 @@ public final class PreviewRender {
 
     /** 命令行参数（都可选）。 */
     private record Options(int width, int height, int thumbWidth, int supersample, boolean labels,
-                           boolean silhouette, double fovDegrees, List<ViewPreset> views) {
+                           boolean silhouette, boolean tight, boolean transparent, double fovDegrees, List<ViewPreset> views) {
 
         static Options defaults() {
             return new Options(DEFAULT_WIDTH, DEFAULT_HEIGHT, DEFAULT_THUMB, DEFAULT_SUPERSAMPLE,
-                    true, true, SoftRasterizer.DEFAULT_FOV_Y_DEGREES, VIEWS);
+                    true, true, false, false, SoftRasterizer.DEFAULT_FOV_Y_DEGREES, VIEWS);
         }
 
         static Options parse(String[] args) {
@@ -698,6 +704,10 @@ public final class PreviewRender {
                     options = options.withLabels(false);
                 } else if (arg.equals("--no-silhouette")) {
                     options = options.withSilhouette(false);
+                } else if (arg.equals("--tight")) {
+                    options = options.withTight(true);
+                } else if (arg.equals("--transparent")) {
+                    options = options.withTransparent(true);
                 } else if (arg.startsWith("--ss=")) {
                     options = options.withSupersample(Math.max(1, Math.min(4, Integer.parseInt(arg.substring(5)))));
                 } else if (arg.startsWith("--size=")) {
@@ -738,31 +748,39 @@ public final class PreviewRender {
         }
 
         Options withLabels(boolean value) {
-            return new Options(width, height, thumbWidth, supersample, value, silhouette, fovDegrees, views);
+            return new Options(width, height, thumbWidth, supersample, value, silhouette, tight, transparent, fovDegrees, views);
         }
 
         Options withSilhouette(boolean value) {
-            return new Options(width, height, thumbWidth, supersample, labels, value, fovDegrees, views);
+            return new Options(width, height, thumbWidth, supersample, labels, value, tight, transparent, fovDegrees, views);
+        }
+
+        Options withTight(boolean value) {
+            return new Options(width, height, thumbWidth, supersample, labels, silhouette, value, transparent, fovDegrees, views);
+        }
+
+        Options withTransparent(boolean value) {
+            return new Options(width, height, thumbWidth, supersample, labels, silhouette, tight, value, fovDegrees, views);
         }
 
         Options withSupersample(int value) {
-            return new Options(width, height, thumbWidth, value, labels, silhouette, fovDegrees, views);
+            return new Options(width, height, thumbWidth, value, labels, silhouette, tight, transparent, fovDegrees, views);
         }
 
         Options withSize(int width, int height) {
-            return new Options(width, height, thumbWidth, supersample, labels, silhouette, fovDegrees, views);
+            return new Options(width, height, thumbWidth, supersample, labels, silhouette, tight, transparent, fovDegrees, views);
         }
 
         Options withThumb(int value) {
-            return new Options(width, height, value, supersample, labels, silhouette, fovDegrees, views);
+            return new Options(width, height, value, supersample, labels, silhouette, tight, transparent, fovDegrees, views);
         }
 
         Options withFov(double value) {
-            return new Options(width, height, thumbWidth, supersample, labels, silhouette, value, views);
+            return new Options(width, height, thumbWidth, supersample, labels, silhouette, tight, transparent, value, views);
         }
 
         Options withViews(List<ViewPreset> value) {
-            return new Options(width, height, thumbWidth, supersample, labels, silhouette, fovDegrees, value);
+            return new Options(width, height, thumbWidth, supersample, labels, silhouette, tight, transparent, fovDegrees, value);
         }
     }
 

@@ -17,6 +17,7 @@ import java.util.stream.Stream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -64,10 +65,10 @@ class WardrobeCollectionTest {
 
         assertTrue(parsed.linked(), "linked 必须原样带出来");
         assertEquals(List.of(
-                new WardrobeCollection.Entry("lw_angel:angel", "Angel Wings", "wings", "lw_angel"),
-                new WardrobeCollection.Entry("lw_hat:crown", "Crown", "hat", "lw_hat")),
+                new WardrobeCollection.Entry("lw_angel:angel", "Angel Wings", "wings", "lw_angel", false),
+                new WardrobeCollection.Entry("lw_hat:crown", "Crown", "hat", "lw_hat", true)),
                 parsed.entries(),
-                "条目顺序 = 服务端顺序；category 统一小写；missing 字段不影响收藏");
+                "条目顺序 = 服务端顺序；category 统一小写；missing 原样带出来");
     }
 
     @Test
@@ -539,6 +540,231 @@ class WardrobeCollectionTest {
         collection.clear();
         assertEquals(2, collection.loadFromDisk(file));
         assertEquals(snapshot, collection.entries());
+    }
+
+    // ==================== missing（目录已删除 / 已停用） ====================
+
+    @Test
+    void parseReadsMissingFlag() {
+        WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json("""
+                {"linked": true, "items": [
+                  {"cosmeticId": "a:ok", "missing": false},
+                  {"cosmeticId": "a:gone", "missing": true}
+                ]}
+                """));
+
+        assertFalse(parsed.entries().get(0).missing());
+        assertTrue(parsed.entries().get(1).missing(),
+                "missing 是服务端字段（目录已删除/已停用），必须解析出来，界面据此禁止穿戴");
+    }
+
+    @Test
+    void parseDefaultsMissingToFalseWhenAbsentOrInvalid() {
+        WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json("""
+                {"linked": true, "items": [
+                  {"cosmeticId": "a:absent"},
+                  {"cosmeticId": "a:null", "missing": null},
+                  {"cosmeticId": "a:str", "missing": "true"},
+                  {"cosmeticId": "a:num", "missing": 1},
+                  {"cosmeticId": "a:obj", "missing": {"x": 1}}
+                ]}
+                """));
+
+        assertFalse(parsed.entries().get(0).missing(), "缺字段 → false（老后端没有这个字段）");
+        assertFalse(parsed.entries().get(1).missing(), "null → false");
+        assertTrue(parsed.entries().get(2).missing(), "字符串 \"true\" 也认（后端序列化差异）");
+        assertFalse(parsed.entries().get(3).missing(), "数字 1 不当 true：Gson 的 getAsBoolean 对 1 抛异常");
+        assertFalse(parsed.entries().get(4).missing(), "对象 → false，不能因为一条脏字段崩掉");
+    }
+
+    @Test
+    void missingFlagSurvivesPersistence() {
+        Path file = tempDir.resolve("wardrobe.json");
+        collection.replaceAll(true, List.of(
+                new WardrobeCollection.Entry("a:gone", "已下架", "cape", "a", true),
+                new WardrobeCollection.Entry("a:ok", "正常", "cape", "a", false)));
+
+        assertTrue(collection.saveNow(file));
+
+        collection.clear();
+        assertEquals(2, collection.loadFromDisk(file));
+        assertEquals(List.of(
+                        new WardrobeCollection.Entry("a:gone", "已下架", "cape", "a", true),
+                        new WardrobeCollection.Entry("a:ok", "正常", "cape", "a", false)),
+                collection.entries(),
+                "missing 必须落盘：否则重启后已下架的时装又变成可穿戴");
+        assertTrue(collection.isMissing("a:gone"));
+        assertEquals(1, collection.missingCount());
+    }
+
+    @Test
+    void oldCacheWithoutMissingFieldLoadsAsNotMissing() throws IOException {
+        // v1.3.0 写的缓存没有 missing 字段：升级后必须按 false 读，不能因为缺字段丢条目
+        Path file = write("""
+                {"formatVersion": 1, "linked": true, "fetchedAt": 1700000000000,
+                 "items": [{"cosmeticId": "a:b", "name": "B", "category": "cape", "packId": "a"}]}
+                """);
+
+        assertEquals(1, collection.loadFromDisk(file));
+        assertEquals(List.of(new WardrobeCollection.Entry("a:b", "B", "cape", "a", false)),
+                collection.entries());
+        assertFalse(collection.isMissing("a:b"));
+        assertEquals(0, collection.missingCount());
+    }
+
+    @Test
+    void isMissingUsesSameLookupAsContains() {
+        collection.replaceAll(true, List.of(
+                new WardrobeCollection.Entry("lw_angel:angel", "Angel", "wings", "lw_angel", true),
+                new WardrobeCollection.Entry("pack_a:hat", "A", "hat", "pack_a", false),
+                new WardrobeCollection.Entry("pack_b:hat", "B", "hat", "pack_b", true)));
+
+        assertTrue(collection.isMissing("lw_angel:angel"));
+        assertTrue(collection.isMissing("LW_ANGEL:ANGEL"), "大小写不敏感");
+        assertTrue(collection.isMissing("angel"), "唯一短 ID 也能命中");
+        assertFalse(collection.isMissing("pack_a:hat"), "收藏了但没下架 → false");
+        assertFalse(collection.isMissing("hat"), "歧义短 ID 不命中 → 不算已下架");
+        assertFalse(collection.isMissing("nope:nope"), "没收藏 ≠ 已下架");
+        assertFalse(collection.isMissing(null));
+        assertFalse(collection.isMissing("   "));
+    }
+
+    @Test
+    void findEntryReturnsNullForUnknownId() {
+        collection.replaceAll(true, List.of(
+                new WardrobeCollection.Entry("a:b", "B", "cape", "a", true)));
+
+        assertNotNull(collection.findEntry("a:b"));
+        assertTrue(collection.findEntry("a:b").missing());
+        assertNull(collection.findEntry("a:c"));
+        assertNull(collection.findEntry(""));
+    }
+
+    // ==================== 输入上限（防御异常 / 恶意后端） ====================
+
+    @Test
+    void parseCapsEntryCount() {
+        StringBuilder body = new StringBuilder("{\"linked\": true, \"items\": [");
+        int total = WardrobeCollection.MAX_ENTRIES + 50;
+        for (int i = 0; i < total; i++) {
+            if (i > 0) {
+                body.append(',');
+            }
+            body.append("{\"cosmeticId\": \"p:c").append(i).append("\"}");
+        }
+        body.append("]}");
+
+        WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json(body.toString()));
+
+        assertEquals(WardrobeCollection.MAX_ENTRIES, parsed.entries().size(),
+                "超过上限的条目必须丢掉：后端异常返回十万条不能把内存和界面拖死");
+    }
+
+    @Test
+    void parseTruncatesOverlongFields() {
+        String longText = "x".repeat(WardrobeCollection.MAX_FIELD_LENGTH + 120);
+        WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json("""
+                {"linked": true, "items": [{"cosmeticId": "%s", "name": "%s", "packId": "%s"}]}
+                """.formatted("a:b", longText, longText)));
+
+        assertEquals(1, parsed.entries().size());
+        WardrobeCollection.Entry entry = parsed.entries().get(0);
+        assertEquals(WardrobeCollection.MAX_FIELD_LENGTH, entry.name().length(), "超长 name 截断");
+        assertEquals(WardrobeCollection.MAX_FIELD_LENGTH, entry.packId().length(), "超长 packId 截断");
+        assertEquals("a:b", entry.cosmeticId(), "正常长度字段不受影响");
+    }
+
+    @Test
+    void normalizeCapsEntriesGivenDirectlyToReplaceAll() {
+        List<WardrobeCollection.Entry> many = new ArrayList<>();
+        for (int i = 0; i < WardrobeCollection.MAX_ENTRIES + 10; i++) {
+            many.add(new WardrobeCollection.Entry("p:c" + i, "", "", ""));
+        }
+        collection.replaceAll(true, many);
+
+        assertEquals(WardrobeCollection.MAX_ENTRIES, collection.size());
+    }
+
+    // ==================== linked 推断（老 / 自建后端不返回该字段） ====================
+
+    @Test
+    void parseInfersLinkedWhenFieldAbsentButItemsPresent() {
+        WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json("""
+                {"items": [{"cosmeticId": "a:b"}]}
+                """));
+
+        assertTrue(parsed.linked(),
+                "没给 linked 却有收藏：按已绑定处理，否则界面退回\"本地全部\"，玩家会以为衣柜没生效");
+    }
+
+    @Test
+    void parseKeepsExplicitLinkedFalseEvenWithItems() {
+        // 字段明确给了 false：契约上 items 必为空，这里保持服务端语义（界面按\"未绑定\"降级）
+        assertFalse(WardrobeCollection.parse(json("""
+                {"linked": false, "items": [{"cosmeticId": "a:b"}]}
+                """)).linked());
+        assertFalse(WardrobeCollection.parse(json("""
+                {"linked": null, "items": []}
+                """)).linked());
+    }
+
+    // ==================== 归属身份（换号 / 换后端防串号） ====================
+
+    @Test
+    void shouldDiscardForOwnerOnlyWhenBothKnownAndDifferent() {
+        assertFalse(WardrobeCollection.shouldDiscardForOwner("", "u|b"), "旧缓存没有身份标记 → 不丢");
+        assertFalse(WardrobeCollection.shouldDiscardForOwner(null, "u|b"));
+        assertFalse(WardrobeCollection.shouldDiscardForOwner("u|b", ""), "新身份未知 → 不丢");
+        assertFalse(WardrobeCollection.shouldDiscardForOwner("u|b", "U|B"), "大小写不同算同一个");
+        assertTrue(WardrobeCollection.shouldDiscardForOwner("u1|b", "u2|b"), "换号 → 丢");
+        assertTrue(WardrobeCollection.shouldDiscardForOwner("u|b1", "u|b2"), "换后端 → 丢");
+    }
+
+    @Test
+    void adoptOwnerKeepsFirstOwnerWithoutDiscarding() {
+        collection.replaceAll(true, List.of(new WardrobeCollection.Entry("a:b", "B", "cape", "a")));
+
+        assertFalse(collection.adoptOwner("u1|https://a"), "首次归属只记身份，不清理");
+        assertEquals("u1|https://a", collection.owner());
+        assertEquals(1, collection.size());
+        assertTrue(collection.loaded());
+    }
+
+    @Test
+    void adoptOwnerDiscardsWhenIdentityChanges() {
+        collection.replaceAll(true, List.of(new WardrobeCollection.Entry("a:b", "B", "cape", "a")));
+        collection.adoptOwner("u1|https://a");
+
+        assertTrue(collection.adoptOwner("u2|https://a"), "换号必须丢旧收藏，否则断网时 B 会看到 A 的衣柜");
+
+        assertEquals(0, collection.size());
+        assertFalse(collection.loaded(), "清掉后界面要退回\"本地全部\"，而不是显示空衣柜");
+        assertFalse(collection.linked());
+        assertEquals("u2|https://a", collection.owner());
+    }
+
+    @Test
+    void adoptOwnerIgnoresBlankCurrentOwner() {
+        collection.replaceAll(true, List.of(new WardrobeCollection.Entry("a:b", "B", "cape", "a")));
+        collection.adoptOwner("u1|https://a");
+
+        assertFalse(collection.adoptOwner(null), "身份未知（客户端还没准备好）时不能动缓存");
+        assertFalse(collection.adoptOwner(""));
+        assertEquals(1, collection.size());
+        assertEquals("u1|https://a", collection.owner());
+    }
+
+    @Test
+    void ownerSurvivesPersistence() {
+        Path file = tempDir.resolve("wardrobe.json");
+        collection.replaceAll(true, List.of(new WardrobeCollection.Entry("a:b", "B", "cape", "a")));
+        collection.adoptOwner("u1|https://a");
+
+        assertTrue(collection.saveNow(file));
+        collection.clear();
+        assertEquals(1, collection.loadFromDisk(file));
+
+        assertEquals("u1|https://a", collection.owner(), "owner 必须落盘：否则重启后无法判断这份缓存是不是自己的");
     }
 
     // ==================== 小工具 ====================

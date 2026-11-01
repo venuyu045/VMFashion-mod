@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "blockbench-headless": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "github:jasonjgardner/blockbench-mcp-plugin",
+        "--root",
+        "."
+      ]
+    }
+  }
+}

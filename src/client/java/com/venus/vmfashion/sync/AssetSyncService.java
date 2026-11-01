@@ -113,7 +113,14 @@ public final class AssetSyncService {
     private volatile ExecutorService ioExecutor;
     private volatile PackDownloader downloader;
     private volatile PackCatalog catalog;
-    private volatile String lastBaseUrl = "";
+    /**
+     * 上一次初始化时的后端地址；{@code null} = 本进程还没初始化过。
+     *
+     * <p>必须是 {@code null} 而不是空串：旧实现用空串当初始值，于是"首次初始化"被当成
+     * "后端地址变了"，直接把 {@code pack-catalog.json} 删掉（{@link PackCatalog#clear()}），
+     * 紧接着的 {@code loadFromDiskIfNeeded} 就再也读不到磁盘清单 —— 离线清单永远不生效。
+     */
+    private volatile String lastBaseUrl;
 
     /** 待安装（含在飞）的 packId（小写）；{@link #pendingCount()} 直接返回它的大小。 */
     private final Set<String> queued = ConcurrentHashMap.newKeySet();
@@ -236,13 +243,14 @@ public final class AssetSyncService {
         if (catalog == null) {
             catalog = new PackCatalog(catalogCacheFile());
         }
-        if (!baseUrl.equalsIgnoreCase(lastBaseUrl)) {
+        if (shouldClearCatalogFor(lastBaseUrl, baseUrl)) {
             // 换了后端：旧清单与旧包的哈希都对不上了，重新来
-            lastBaseUrl = baseUrl;
+            VMFashionClient.LOGGER.info("时装后端地址已变化（{} → {}），已清空包清单缓存", lastBaseUrl, baseUrl);
             catalog.clear();
             catalogUnsupported = false;
             lastCatalogAttemptAt = 0L;
         }
+        lastBaseUrl = baseUrl;
         enabled = true;
         rejectedBySignature.clear();
         trustStore = null;
@@ -901,6 +909,26 @@ public final class AssetSyncService {
     }
 
     // ==================== 磁盘扫描 / 安装细节 ====================
+
+    /**
+     * 后端地址变化时是否要清空包清单缓存（纯逻辑，可单测）。
+     *
+     * <p>两种不清的情况：
+     * <ul>
+     *   <li>{@code previousBaseUrl} 为空（本进程第一次初始化）—— 此时磁盘缓存是<b>唯一</b>的离线数据源，
+     *       清掉等于每次启动都白丢一次；</li>
+     *   <li>地址没变（配置热更新）—— 清单继续用，别让玩家白等一次网络往返。</li>
+     * </ul>
+     */
+    static boolean shouldClearCatalogFor(String previousBaseUrl, String currentBaseUrl) {
+        if (previousBaseUrl == null || previousBaseUrl.isBlank()) {
+            return false;
+        }
+        if (currentBaseUrl == null || currentBaseUrl.isBlank()) {
+            return false;
+        }
+        return !previousBaseUrl.trim().equalsIgnoreCase(currentBaseUrl.trim());
+    }
 
     /** 扫描磁盘，重建"已安装 / 用户包"内存视图，并清掉上次崩溃留下的临时目录。 */
     private void rescanDisk() {

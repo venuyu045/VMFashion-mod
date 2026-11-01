@@ -365,7 +365,13 @@ public final class FashionAuth {
         }
     }
 
-    private static UUID currentProfileId() {
+    /**
+     * 当前 Minecraft 账号的 UUID（客户端未初始化 / 离线登录时返回 {@code null}）。
+     *
+     * <p>公开是为了让同步层判断"这份本地缓存属于哪个账号"（衣柜收藏的防串号），
+     * 它只读 {@code Minecraft#getUser()}，不做任何网络 / 磁盘操作。
+     */
+    public static UUID currentProfileId() {
         try {
             Minecraft minecraft = Minecraft.getInstance();
             if (minecraft == null) {

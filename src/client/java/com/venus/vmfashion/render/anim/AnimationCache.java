@@ -53,6 +53,14 @@ public final class AnimationCache {
         final Map<String, AnimationFrame> frames = new ConcurrentHashMap<>();
         /** 负缓存：这些时装 ID 的动画状态创建失败，本代直接按静态模型渲染。 */
         final Set<String> negatives = ConcurrentHashMap.newKeySet();
+        /**
+         * 最近一次被 {@link #frameFor} 命中的时间。
+         *
+         * <p>为什么需要它：负缓存没有时间戳，只按帧淘汰的话，"玩家已离场 + 有坏包"的整条记录
+         * 永远不会被回收（{@code prune()} 只删 {@code frames} 里的条目，且要求两者都空才删玩家）。
+         * 有了这个时间戳就能把整条记录一起淘汰。
+         */
+        volatile long lastUsedNanos = System.nanoTime();
     }
 
     /**
@@ -71,6 +79,7 @@ public final class AnimationCache {
         String cosmeticId = definition.id();
         PerPlayer perPlayer = FRAMES.get(uuid);
         if (perPlayer != null) {
+            perPlayer.lastUsedNanos = System.nanoTime();
             AnimationFrame cached = perPlayer.frames.get(cosmeticId);
             if (cached != null) {
                 return cached;
@@ -168,9 +177,16 @@ public final class AnimationCache {
     }
 
     private static void prune() {
+        long now = System.nanoTime();
         Iterator<Map.Entry<UUID, PerPlayer>> players = FRAMES.entrySet().iterator();
         while (players.hasNext()) {
             PerPlayer perPlayer = players.next().getValue();
+            // 整条记录空闲超时（玩家离场 / 很久没渲染他）：连负缓存一起丢掉。
+            // 只按帧淘汰的话，负缓存没有时间戳，"有坏包的玩家"这条记录会永久占着内存。
+            if ((now - perPlayer.lastUsedNanos) / 1_000_000L > IDLE_EVICT_MS) {
+                players.remove();
+                continue;
+            }
             Iterator<Map.Entry<String, AnimationFrame>> frames = perPlayer.frames.entrySet().iterator();
             while (frames.hasNext()) {
                 if (frames.next().getValue().idleMillis() > IDLE_EVICT_MS) {

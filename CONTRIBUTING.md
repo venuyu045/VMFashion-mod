@@ -119,7 +119,23 @@ bash tools/dev/check-jar.sh path/to.jar
 
 检查图标 / 语言文件 / 示例包 / `fabric.mod.json` 版本占位符是否展开 / 入口类是否存在。
 
-### 3.6 其它
+### 3.6 时装建模与交付闸门
+
+做时装（Bedrock 几何 + 贴图 + 动画）时用这一套，**不要让模型"看起来对"就直接提交**：
+GeckoLib 不校验几何，版本不认识只打 warn，UV 坏了照样渲染。
+
+```bash
+# 交付前跑这一个，全绿才算完（审计 + 预览图 + UV 对位向导）
+bash tools/dev/modeling-gate.sh <包目录> <cosmeticId> --uv
+
+# 只看 UV 布局 / 生成对位向导图
+python3 tools/dev/uv_layout.py <时装目录> --out build/uv/<id>
+```
+
+AI 辅助建模（Blockbench MCP + Agent Skills）的完整流程见
+[**docs/ai-modeling.md**](docs/ai-modeling.md)。
+
+### 3.7 其它
 
 | 脚本 | 用途 |
 |---|---|
@@ -127,6 +143,8 @@ bash tools/dev/check-jar.sh path/to.jar
 | `bash tools/dev/release-notes.sh 0.2.0` | 从 `CHANGELOG.md` 抽某个版本的发布说明到 `build/release-notes.md`（抽不到会用兜底说明，不会让发布失败） |
 | `bash tools/dev/set-version.sh 0.2.0` | 改 `gradle.properties` 的 `mod_version` |
 | `python3 tools/dev/make-icon.py` | 重新生成 `assets/vmfashion/icon.png`（128×128，纯 zlib 手写 PNG，不依赖 Pillow；会覆盖现有图标） |
+| `python3 tools/dev/uv_layout.py` | 从 `model.geo.json` 反解 UV 矩形表，输出 `uv_layout.json` + `uv_guide.png` |
+| `python3 tools/dev/pnglib.py` | 纯标准库 PNG 读写；`pnglib.py a.png b.png` 可逐字节比对两张贴图 |
 
 ---
 

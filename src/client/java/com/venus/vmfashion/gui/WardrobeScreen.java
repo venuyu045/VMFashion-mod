@@ -97,6 +97,19 @@ public final class WardrobeScreen extends Screen {
     private static final int BASE_CARD_GAP = 6;
     private static final int BASE_SEARCH_HEIGHT = 16;
 
+    /**
+     * 三栏布局的**最小**基准尺寸（base 单位，未乘缩放）。
+     *
+     * <p>分类栏 + 1 列卡片 + 预览栏 + 4 个 padding 是这套布局不可再压缩的下限；
+     * {@code init()} 用它反推"实际能用的缩放"，保证面板被屏幕夹小 / uiScale 很大时
+     * 三栏仍然放得下（否则网格会被画到预览栏上）。
+     */
+    private static final int BASE_MIN_WIDTH = BASE_TAB_WIDTH + BASE_CARD_WIDTH + BASE_PREVIEW_WIDTH
+            + 4 * ModConfig.UI.PADDING;
+    /** 高度方向的下限：头部 + 搜索框 + 1 行卡片 + 底部三行状态 + 3 个 padding。 */
+    private static final int BASE_MIN_HEIGHT = BASE_HEADER_HEIGHT + BASE_SEARCH_HEIGHT + BASE_CARD_HEIGHT
+            + BASE_FOOTER_HEIGHT + 3 * ModConfig.UI.PADDING;
+
     private static final int TAB_SPACING = 2;
     private static final int CARD_INNER_PADDING = 4;
     private static final int LINE_HEIGHT = 10;
@@ -159,11 +172,36 @@ public final class WardrobeScreen extends Screen {
     private static final String NOT_INSTALLED_MARK = "vmfashion.gui.card.not_installed";
     /** 卡片角标：未下载 + 正在下载中（包已入队）。 */
     private static final String DOWNLOADING_MARK = "vmfashion.gui.card.downloading";
+    /**
+     * 卡片角标：已下架（服务端目录里删除 / 停用）。
+     *
+     * <p>语义和上面两个完全不同：{@link #NOT_INSTALLED_MARK} 是"本地没装包、点一下就下载"，
+     * 这个角标是"后端已经不要它了，点了也不会有任何结果"——所以它必须盖掉"未下载"角标，
+     * 并且点击不触发下载 / 穿戴。
+     */
+    private static final String MISSING_MARK = "vmfashion.gui.card.missing";
+    /** 已下架卡片悬停时的解释文案。 */
+    private static final String MISSING_HINT = "vmfashion.gui.card.missing_hint";
     /** 角标底色（压在半透明缩略图上，保证文字可读）。 */
     private static final int BADGE_BG_COLOR = 0xCC000000;
 
     /** 打开衣柜时，"收藏多久没刷新才重新拉一次"（毫秒）。 */
     private static final long WARDROBE_REFRESH_INTERVAL_MS = 60_000L;
+
+    /**
+     * 底部状态行的重算间隔（毫秒）。
+     *
+     * <p>状态行每帧都要画，但内容（同步状态 / 资产状态 / 数据来源）不是动画：
+     * 250ms 一次既看不出延迟，又能把每帧 3 个 {@link Component} + 3 个字符串的分配压掉。
+     */
+    private static final long FOOTER_CACHE_MS = 250L;
+
+    /** 底部三行已经算好的纯文本（见 {@link #rebuildFooterLinesIfStale()}）。 */
+    private String footerSyncLine;
+    private String footerAssetsLine;
+    private String footerSourceLine;
+    /** 上面三行是什么时候算的（毫秒）；时钟回拨时也会重算。 */
+    private long footerBuiltAtMs;
 
     /** 左侧分类 tab（"全部"的 category 为 {@code null}）。 */
     private final List<TabEntry> tabs = new ArrayList<>();
@@ -208,6 +246,14 @@ public final class WardrobeScreen extends Screen {
     /** 本帧剩余的烘焙预算。 */
     private int bakeBudget;
 
+    /**
+     * 预览栏可用的最小宽度（逻辑像素）。小于它就没法显示缩略图 + 文字，整栏隐藏（见 {@link #init()}）。
+     *
+     * <p>取 110：`BASE_PREVIEW_WIDTH=150` 的 2/3，再小下去缩略图（最大 72）+ 两行文字就挤成一团；
+     * 实测 256×200 逻辑像素时预览栏仍有 116 宽（刚好够），220–240 宽时降到 ~104 → 走降级。
+     */
+    private static final int MIN_PREVIEW_WIDTH = 110;
+
     /** 预览面板里 hideParts 文本的缓存（拼接会产生垃圾，选中的时装不变就不重算）。 */
     private CosmeticDefinition hidePartsOwner;
     private String hidePartsCache = EMPTY_VALUE;
@@ -244,6 +290,12 @@ public final class WardrobeScreen extends Screen {
     private int cardHeight;
     private int cardGap;
     private int columns;
+    /**
+     * 窗口太窄时预览栏被整栏隐藏（降级模式，见 {@link #init()}）。
+     *
+     * <p>此时 {@code previewWidth == 0}、网格吃满剩余宽度、穿上/脱下按钮搬到网格下方。
+     */
+    private boolean previewHidden;
 
     public WardrobeScreen(Screen parent) {
         super(Component.translatable("vmfashion.gui.title"));
@@ -279,13 +331,27 @@ public final class WardrobeScreen extends Screen {
 
     @Override
     protected void init() {
-        this.uiScale = resolveUiScale();
-        float scale = this.uiScale;
+        float wantedScale = resolveUiScale();
 
-        this.panelWidth = Math.max(240, Math.min(this.width - 8, Math.round(BASE_WIDTH * scale)));
-        this.panelHeight = Math.max(170, Math.min(this.height - 8, Math.round(BASE_HEIGHT * scale)));
+        // 面板尺寸先按屏幕夹住。旧写法是 max(240, min(width - 8, …))：窗口比 248 还窄时
+        // 下限 240 会赢，面板左右各溢出屏幕一截（右半边的按钮永远点不到）。
+        int maxPanelWidth = Math.max(1, this.width - 8);
+        int maxPanelHeight = Math.max(1, this.height - 8);
+        this.panelWidth = Math.min(maxPanelWidth, Math.max(240, Math.round(BASE_WIDTH * wantedScale)));
+        this.panelHeight = Math.min(maxPanelHeight, Math.max(170, Math.round(BASE_HEIGHT * wantedScale)));
         this.panelX = (this.width - panelWidth) / 2;
         this.panelY = (this.height - panelHeight) / 2;
+
+        // 内部三栏（分类 / 网格 / 预览）的尺寸必须跟着**实际面板**收缩，而不是只跟着 uiScale。
+        // 面板被屏幕夹小之后仍按 uiScale 算，就会出现"网格和搜索框画到预览栏上、点击判定却
+        // 仍然覆盖被遮住的那块区域"（幽灵点击）；uiScale = 2 配 480 宽的 GUI 必现。
+        // 约束：三栏最小布局（分类 + 1 列卡片 + 预览 + 4 个 padding）必须放得下面板。
+        float fitWidth = panelWidth / (float) BASE_MIN_WIDTH;
+        float fitHeight = panelHeight / (float) BASE_MIN_HEIGHT;
+        float scale = Math.min(wantedScale, Math.min(fitWidth, fitHeight));
+        // 极端小窗口下也别把布局压成 0：下限 0.35 仍能画出一列卡片
+        scale = Math.max(0.35f, scale);
+        this.uiScale = scale;
 
         this.padding = Math.max(4, Math.round(ModConfig.UI.PADDING * scale));
         this.headerHeight = Math.max(20, Math.round(BASE_HEADER_HEIGHT * scale));
@@ -305,18 +371,38 @@ public final class WardrobeScreen extends Screen {
         int contentLeft = panelX + padding;
         int contentRight = panelX + panelWidth - padding;
         int tabsRight = contentLeft + tabWidth;
+        // 降级：面板窄到"分类 + 一列卡片 + 预览"都放不下时（缩放被压到 0.35–0.625 区间，
+        // 卡片 / 预览的**下限**尺寸开始赢过可用空间），把预览栏整栏隐藏，宽度全给网格。
+        //
+        // 为什么必须这么做：预览面板在 drawGrid 之后绘制（不透明底色），会把越界的网格盖住；
+        // 而点击判定用的仍是 gridX..gridX+gridWidth —— 于是"看得见的是预览区、点下去命中的是卡片"
+        // （实测 200×150 逻辑像素时重叠 21px，点预览缩略图会选中 / 穿上被遮住的卡片）。
+        // 少一栏只是信息少，点错是错误操作，必须消掉。
+        int gridBudget = contentRight - tabsRight - 2 * padding;
+        // 先试着把预览栏压到"刚好给网格留出一整列卡片"：能留就留（只压窄，不隐藏），
+        // 压到 MIN_PREVIEW_WIDTH 还留不出来才降级整栏隐藏。
+        int previewWanted = Math.min(previewWidth, Math.max(0, gridBudget - cardWidth));
+        this.previewHidden = previewWanted < MIN_PREVIEW_WIDTH;
+        this.previewWidth = previewHidden ? 0 : previewWanted;
         int previewLeft = contentRight - previewWidth;
 
         // 搜索框放在网格列顶部，宽度跟网格列一致，避免和标题 / 返回按钮抢空间
         this.searchHeight = Math.max(12, Math.round(BASE_SEARCH_HEIGHT * scale));
         this.searchX = tabsRight + padding;
         this.searchY = contentTop;
-        this.searchWidth = Math.max(60, previewLeft - padding - searchX);
+        // 小窗口下宁可让搜索框窄一点，也不能压到预览栏上：搜索框是控件，画在预览栏之后，
+        // 越界的那几像素会盖住预览面板（而且点上去是控件命中，不是卡片命中）。
+        int searchSpace = Math.max(0, previewLeft - padding - searchX);
+        this.searchWidth = Math.max(24, Math.min(Math.max(60, searchSpace), searchSpace));
 
         this.gridX = searchX;
         this.gridY = contentTop + searchHeight + padding;
-        this.gridWidth = Math.max(cardWidth, previewLeft - padding - gridX);
-        this.gridHeight = Math.max(cardHeight, contentBottom - gridY);
+        // 网格宽度**永远不越过** previewLeft：不加 max(cardWidth, …)，否则极小窗口下
+        // 网格会伸到预览栏底下（看得见的是预览、点得中的是卡片）。宁可一列只露出半张卡片。
+        this.gridWidth = Math.max(1, previewLeft - padding - gridX);
+        // 预览栏隐藏时按钮搬到网格下方，网格底部要给按钮留出高度，否则按钮会压住卡片
+        int gridBottom = previewHidden ? contentBottom - buttonHeight - padding : contentBottom;
+        this.gridHeight = Math.max(cardHeight, gridBottom - gridY);
         this.columns = Math.max(1, (gridWidth + cardGap) / (cardWidth + cardGap));
 
         buildTabs(contentLeft, contentTop);
@@ -427,16 +513,24 @@ public final class WardrobeScreen extends Screen {
         this.searchField.getWidget().setMaxLength(MAX_SEARCH_LENGTH);
         this.addRenderableWidget(this.searchField.getWidget());
 
-        int previewLeft = panelX + panelWidth - padding - previewWidth;
         int buttonsTop = contentBottom - buttonHeight;
-        int buttonWidth = Math.max(40, (previewWidth - 3 * padding) / 2);
+        int buttonsLeft;
+        int buttonWidth;
+        if (previewHidden) {
+            // 降级模式：没有预览栏，按钮均分网格宽度放在网格下方（init() 已给按钮留出高度）
+            buttonsLeft = gridX;
+            buttonWidth = Math.max(30, (gridWidth - padding) / 2);
+        } else {
+            buttonsLeft = panelX + panelWidth - padding - previewWidth + padding;
+            buttonWidth = Math.max(40, (previewWidth - 3 * padding) / 2);
+        }
         this.equipButton = Button.builder(Component.translatable("vmfashion.gui.equip"),
                         button -> equipSelected())
-                .bounds(previewLeft + padding, buttonsTop, buttonWidth, buttonHeight)
+                .bounds(buttonsLeft, buttonsTop, buttonWidth, buttonHeight)
                 .build();
         this.unequipButton = Button.builder(Component.translatable("vmfashion.gui.unequip"),
                         button -> unequipSelected())
-                .bounds(previewLeft + padding + buttonWidth + padding, buttonsTop, buttonWidth, buttonHeight)
+                .bounds(buttonsLeft + buttonWidth + padding, buttonsTop, buttonWidth, buttonHeight)
                 .build();
         this.addRenderableWidget(this.equipButton);
         this.addRenderableWidget(this.unequipButton);
@@ -579,11 +673,18 @@ public final class WardrobeScreen extends Screen {
         boolean worn = isWorn(entry);
         boolean hovered = isInside(mouseX, mouseY, x, y, cardWidth, cardHeight);
         boolean chosen = entry == this.selected;
+        boolean missing = entry.missing();
 
-        int background = (hovered || chosen) ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.PANEL_COLOR;
+        // 已下架（服务端目录里删了 / 停用了）的卡片要一眼看出"不可用"：
+        // 底色压暗一档 + 名称走弱化色 + 左上角红色「已下架」角标；选中/悬停时仍然高亮，
+        // 否则玩家会以为卡片点不动是界面卡了。
+        int background = missing
+                ? (hovered || chosen ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.BG_COLOR)
+                : ((hovered || chosen) ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.PANEL_COLOR);
         context.fill(x, y, x + cardWidth, y + cardHeight, withAlpha(background, alpha));
         int border = worn ? ModConfig.UI.SUCCESS_COLOR
-                : (chosen ? ModConfig.UI.ACCENT_COLOR : ModConfig.UI.BORDER_COLOR);
+                : (chosen ? ModConfig.UI.ACCENT_COLOR
+                : (missing ? ModConfig.UI.DANGER_COLOR : ModConfig.UI.BORDER_COLOR));
         context.outline(x, y, cardWidth, cardHeight, withAlpha(border, alpha));
 
         // 缩略图：已安装的走 CosmeticAssets 注册好的 Identifier；未安装的没有贴图，只能画占位
@@ -606,12 +707,24 @@ public final class WardrobeScreen extends Screen {
                     withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
         }
 
-        // 名称（超出卡片宽度就截断）
+        // 名称（超出卡片宽度就截断）；已下架用弱化色
         drawCenteredTruncated(context, entry.name(), x + cardWidth / 2,
-                thumbY + thumbSize + 2, thumbSize, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
+                thumbY + thumbSize + 2, thumbSize,
+                withAlpha(missing ? ModConfig.UI.MUTED_COLOR : ModConfig.UI.TEXT_COLOR, alpha));
 
         // 状态角标（左上角）
-        if (!entry.installed()) {
+        if (missing) {
+            // 已下架优先级最高：它既不"未下载"也不"下载中"（后端一定会拒绝下发），
+            // 所以绝不能被下面两个分支的文案盖掉。
+            int reserved = worn ? this.font.width(WORN_MARK) + 4 : 0;
+            drawCornerBadge(context, Component.translatable(MISSING_MARK),
+                    x + 2, y + 2, Math.max(0, cardWidth - 4 - reserved),
+                    ModConfig.UI.DANGER_COLOR, alpha);
+            if (hovered) {
+                // 悬停时补一句解释（原版 widget 也是在这个阶段排队 tooltip 的）
+                context.setTooltipForNextFrame(Component.translatable(MISSING_HINT), mouseX, mouseY);
+            }
+        } else if (!entry.installed()) {
             // 收藏里有、本地没装包：优先显示"下载中…"，否则"未下载"（点卡片就会开始下载）
             boolean downloading = isPackPending(packIdOf(entry));
             int reserved = worn ? this.font.width(WORN_MARK) + 4 : 0;
@@ -673,6 +786,10 @@ public final class WardrobeScreen extends Screen {
     }
 
     private void drawPreview(GuiGraphicsExtractor context, float alpha) {
+        if (previewHidden || previewWidth <= 0) {
+            // 降级模式：窗口太窄，预览栏整栏隐藏（按钮已搬到网格下方，见 buildWidgets()）
+            return;
+        }
         int left = panelX + panelWidth - padding - previewWidth;
         int right = panelX + panelWidth - padding;
         int top = contentTop;
@@ -720,17 +837,27 @@ public final class WardrobeScreen extends Screen {
             // 本地没装包：没有骨骼 / 隐藏部件 / 缩放可显示，改成"所属包" + 一行说明
             y = drawLabelValue(context, "vmfashion.gui.preview.pack", valueOrDash(packIdOf(entry)),
                     textX, y, textWidth, alpha);
+            // 已下架优先：不能再显示"穿上后会自动下载"——后端根本不会再下发这件时装
+            boolean missing = entry.missing();
             context.textWithWordWrap(this.font,
-                    Component.translatable("vmfashion.gui.preview.not_installed"),
-                    textX, y + 2, textWidth, withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+                    Component.translatable(missing
+                            ? "vmfashion.gui.preview.missing"
+                            : "vmfashion.gui.preview.not_installed"),
+                    textX, y + 2, textWidth,
+                    withAlpha(missing ? ModConfig.UI.DANGER_COLOR : ModConfig.UI.ACCENT_COLOR, alpha));
             return;
         }
         y = drawLabelValue(context, "vmfashion.gui.preview.bone", definition.attachedBone(),
                 textX, y, textWidth, alpha);
         y = drawLabelValue(context, "vmfashion.gui.preview.hide_parts", hidePartsText(definition),
                 textX, y, textWidth, alpha);
-        drawLabelValue(context, "vmfashion.gui.preview.scale", String.valueOf(definition.scale()),
+        y = drawLabelValue(context, "vmfashion.gui.preview.scale", String.valueOf(definition.scale()),
                 textX, y, textWidth, alpha);
+        if (entry.missing()) {
+            // 已安装但已下架：预览里必须说明"不能穿"，否则玩家只会看到一堆正常信息
+            context.textWithWordWrap(this.font, Component.translatable("vmfashion.gui.preview.missing"),
+                    textX, y + 2, textWidth, withAlpha(ModConfig.UI.DANGER_COLOR, alpha));
+        }
     }
 
     private static String valueOrDash(String value) {
@@ -746,6 +873,34 @@ public final class WardrobeScreen extends Screen {
 
         int textX = panelX + padding;
         int maxWidth = Math.max(40, panelWidth - 2 * padding);
+        rebuildFooterLinesIfStale();
+        drawTruncated(context, footerSyncLine,
+                textX, top + 3, maxWidth, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
+        drawTruncated(context, footerAssetsLine,
+                textX, top + 3 + LINE_HEIGHT, maxWidth, withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+        // 第三行：这份列表到底从哪来的（收藏 N 件 / 未绑定 / 未加载 / 开关关闭）
+        drawTruncated(context, footerSourceLine,
+                textX, top + 3 + 2 * LINE_HEIGHT, maxWidth,
+                withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+    }
+
+    /**
+     * 重算底部三行文字（{@value #FOOTER_CACHE_MS}ms 一次）。
+     *
+     * <p>为什么要缓存：这三行每帧要调两个跨模块的 {@code describeStatus()}、拼 3 个
+     * {@link Component} 再各取一次 {@code getString()}（60Hz 下约 10 个字符串/秒·帧的垃圾）。
+     * 状态行不是动画，250ms 刷新一次肉眼看不出来，但把每帧的分配压到 0。
+     *
+     * <p>时钟回拨（{@code now < builtAt}）时也重算，避免永远停在旧文案上。
+     */
+    private void rebuildFooterLinesIfStale() {
+        long now = System.currentTimeMillis();
+        boolean stale = footerSourceLine == null || now < footerBuiltAtMs
+                || now - footerBuiltAtMs >= FOOTER_CACHE_MS;
+        if (!stale) {
+            return;
+        }
+        footerBuiltAtMs = now;
         // 两个 describeStatus 都不属于本模组界面（其它成员在并行改）；抛异常不能连累整个界面。
         // 两者现在都返回 Component，文案跟着客户端语言走。
         Component syncStatus = safeComponent(() -> SyncService.getInstance().describeStatus());
@@ -756,14 +911,9 @@ public final class WardrobeScreen extends Screen {
         if (failed > 0) {
             assetsLine.append(Component.translatable("vmfashion.gui.status.assets_failed", failed));
         }
-        drawTruncated(context, Component.translatable("vmfashion.gui.status.sync", syncStatus).getString(),
-                textX, top + 3, maxWidth, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
-        drawTruncated(context, assetsLine.getString(),
-                textX, top + 3 + LINE_HEIGHT, maxWidth, withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
-        // 第三行：这份列表到底从哪来的（收藏 N 件 / 未绑定 / 未加载 / 开关关闭）
-        drawTruncated(context, sourceStatusText().getString(),
-                textX, top + 3 + 2 * LINE_HEIGHT, maxWidth,
-                withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+        footerSyncLine = Component.translatable("vmfashion.gui.status.sync", syncStatus).getString();
+        footerAssetsLine = assetsLine.getString();
+        footerSourceLine = sourceStatusText().getString();
     }
 
     /**
@@ -774,8 +924,17 @@ public final class WardrobeScreen extends Screen {
      */
     private Component sourceStatusText() {
         return switch (wardrobeSource()) {
-            case FILTERED -> Component.translatable("vmfashion.gui.source.wardrobe",
-                    safeCollectionSize());
+            case FILTERED -> {
+                MutableComponent text = Component.translatable("vmfashion.gui.source.wardrobe",
+                        safeCollectionSize());
+                // 已下架的收藏也还在列表里（灰掉 + 「已下架」角标），状态行里给个总数，
+                // 玩家才不会以为"这几件怎么点都穿不上"是模组坏了
+                int removed = safeMissingCount();
+                if (removed > 0) {
+                    text.append(Component.translatable("vmfashion.gui.source.removed", removed));
+                }
+                yield text;
+            }
             case UNLINKED -> Component.translatable("vmfashion.gui.source.unlinked");
             case NOT_LOADED -> Component.translatable("vmfashion.gui.source.not_loaded");
             case DISABLED -> Component.translatable("vmfashion.gui.source.disabled");
@@ -786,6 +945,27 @@ public final class WardrobeScreen extends Screen {
     private static int safeCollectionSize() {
         try {
             return WardrobeCollection.getInstance().size();
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /**
+     * 收藏里"已下架"的件数；同步层抛异常时按 0 算。
+     *
+     * <p>用 {@link WardrobeCollection#entries()} 一次遍历而不是对每件调 {@code isMissing(id)}：
+     * 后者每次都从头线性查一遍，列表大时是 O(n²)。
+     */
+    private static int safeMissingCount() {
+        try {
+            List<WardrobeCollection.Entry> entries = WardrobeCollection.getInstance().entries();
+            int count = 0;
+            for (WardrobeCollection.Entry entry : entries) {
+                if (entry != null && entry.missing()) {
+                    count++;
+                }
+            }
+            return count;
         } catch (Throwable t) {
             return 0;
         }
@@ -835,8 +1015,10 @@ public final class WardrobeScreen extends Screen {
                 WardrobeEntry entry = filtered.get(index);
                 this.selected = entry;
                 // 收藏里有、本地没装包：点一下就直接穿上（同时触发时装包下发），
-                // 不用先选中再点"穿上" —— 玩家点它的意图就是"我要穿这个"
-                if (!entry.installed() && !isWorn(entry)) {
+                // 不用先选中再点"穿上" —— 玩家点它的意图就是"我要穿这个"。
+                // 已下架的条目只选中（右侧预览会说明原因），绝不触发下载 / 穿戴：
+                // 后端对已下架时装一定拒绝，点了只会让玩家以为界面坏了。
+                if (entry.equipable() && !entry.installed() && !isWorn(entry)) {
                     equipEntry(entry);
                 }
                 refreshButtons();
@@ -879,8 +1061,10 @@ public final class WardrobeScreen extends Screen {
         if (column >= columns) {
             return -1;
         }
-        // 点在卡片之间的空隙上不算命中
-        if (relativeX % cellWidth > cardWidth || relativeY % cellHeight > cardHeight) {
+        // 点在卡片之间的空隙上不算命中。
+        // 用 >=：卡片占 [0, cardWidth - 1]，从 cardWidth 起就是空隙（旧写法用 >，
+        // 卡片右沿 / 下沿那一列像素会被当成命中，点空隙也会选中隔壁卡片）。
+        if (relativeX % cellWidth >= cardWidth || relativeY % cellHeight >= cardHeight) {
             return -1;
         }
         int index = row * columns + column;
@@ -903,9 +1087,18 @@ public final class WardrobeScreen extends Screen {
      *   <li><b>未安装</b>：{@link LocalLoadout#wear(String, String)} 只记 ID，再请求时装包下发；
      *       包到了之后注册表刷新，渲染层自然就能画出来（界面里那件会从"未下载"变成正常卡片）。</li>
      * </ul>
+     *
+     * <p><b>已下架（{@code missing}）的条目一律拒绝</b>：后端目录里已经没有它了，
+     * 硬写进穿戴表只会在上报时被拒、身上也画不出东西。这里给一条明确的错误提示，
+     * 而不是让玩家点了"穿上"什么反应都没有。
      */
     private void equipEntry(WardrobeEntry entry) {
         if (entry == null) {
+            return;
+        }
+        if (!entry.equipable()) {
+            ToastWidget.showError(Component.translatable("vmfashion.gui.toast.equip_missing",
+                    entry.name()));
             return;
         }
         CosmeticDefinition definition = entry.definition();
@@ -926,8 +1119,16 @@ public final class WardrobeScreen extends Screen {
             // 上报在触发下载之前：就算下载排队很久，网站侧"我穿了什么"也已经是新的
             SyncService.getInstance().uploadLocalLoadout();
             requestMissingPack(entry);
-            ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped_downloading",
-                    entry.name()));
+            // 只有真的进了下发队列才说"正在下载"：纯本地模式（没配后端 / 关了自动下发）、
+            // 用户自己装的同名包、验签失败过、失败退避窗口里，requestMissing 都是静默返回，
+            // 旧代码照样弹"正在下载…"，玩家会一直等一个永远不会来的包。
+            if (isPackPending(packIdOf(entry))) {
+                ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped_downloading",
+                        entry.name()));
+            } else {
+                ToastWidget.showWarning(Component.translatable("vmfashion.gui.toast.equip_no_download",
+                        entry.name()));
+            }
         }
         refreshButtons();
     }
@@ -966,7 +1167,8 @@ public final class WardrobeScreen extends Screen {
 
     private void refreshButtons() {
         if (equipButton != null) {
-            equipButton.active = selected != null && !isWorn(selected);
+            // 已下架的条目不能穿：按钮直接置灰（点卡片也不会自动穿，见 mouseClicked）
+            equipButton.active = selected != null && selected.equipable() && !isWorn(selected);
         }
         if (unequipButton != null) {
             CosmeticCategory category = selected != null ? selected.category() : selectedCategory;
@@ -981,6 +1183,11 @@ public final class WardrobeScreen extends Screen {
      * <p>两个方向都判：服务端收藏里的 ID 可能是不带包名的短 ID（{@code angel}），
      * 而本地装上包之后条目 ID 会变成全局 ID（{@code lw_angel:angel}）—— 只比一边会出现
      * "明明穿着却显示没穿"。{@code entry.id()} 与本地定义 ID 任一命中都算穿着。
+     *
+     * <p><b>还要比"短名"</b>（v1.3.1）：未下载的收藏点穿上时写进 {@link LocalLoadout} 的是
+     * <em>当时</em>的 ID（短 ID {@code angel}）；包下载完、注册表重建之后同一个条目的
+     * {@code entry.id()} 变成全局 ID {@code lw_angel:angel}，而穿戴表里仍然是 {@code angel}。
+     * 只比全名的话，卡片会在下载完成的瞬间从"已穿"退回"未穿"（角标消失、穿上按钮重新亮起）。
      */
     private static boolean isWorn(WardrobeEntry entry) {
         if (entry == null) {
@@ -990,11 +1197,11 @@ public final class WardrobeScreen extends Screen {
         if (wornId == null) {
             return false;
         }
-        if (wornId.equalsIgnoreCase(entry.id())) {
+        if (CosmeticIdMatch.same(wornId, entry.id())) {
             return true;
         }
         CosmeticDefinition definition = entry.definition();
-        return definition != null && wornId.equalsIgnoreCase(definition.id());
+        return definition != null && CosmeticIdMatch.same(wornId, definition.id());
     }
 
     // ==================== 过滤 / 选择 ====================
@@ -1106,7 +1313,7 @@ public final class WardrobeScreen extends Screen {
                 continue;
             }
             result.add(new WardrobeEntry(definition.id(), definition.name(),
-                    definition.category(), definition.packId(), definition));
+                    definition.category(), definition.packId(), definition, false));
         }
         return result;
     }
@@ -1135,11 +1342,11 @@ public final class WardrobeScreen extends Screen {
                         ? serverName(entry)
                         : definition.name();
                 result.add(new WardrobeEntry(definition.id(), name, definition.category(),
-                        definition.packId(), definition));
+                        definition.packId(), definition, entry.missing()));
             } else {
                 result.add(new WardrobeEntry(entry.cosmeticId(), serverName(entry),
                         CosmeticCategory.byKey(entry.categoryKey()),
-                        entry.packId() == null ? "" : entry.packId(), null));
+                        entry.packId() == null ? "" : entry.packId(), null, entry.missing()));
             }
         }
         return result;
@@ -1168,13 +1375,17 @@ public final class WardrobeScreen extends Screen {
      * <p>两种失效：{@code /vmfashion reload} 之后收藏里的时装没了；或者未安装的条目刚下载完，
      * 条目从 {@code definition == null} 变成有定义 —— 后者要换成本次构建的新对象，
      * 否则预览面板会一直停在"本地未安装"。
+     *
+     * <p>匹配用 {@link CosmeticIdMatch#same}（而不是全名相等）：短 ID 收藏在包下载完之后
+     * {@code id()} 会从 {@code angel} 变成 {@code lw_angel:angel}，全名比较会让选中的条目
+     * 在"下载完成"的瞬间被判为失效、预览面板被清空（玩家正盯着它等下载结果）。
      */
     private void ensureSelectedValid(List<WardrobeEntry> all) {
         if (selected == null) {
             return;
         }
         for (WardrobeEntry entry : all) {
-            if (entry.id().equalsIgnoreCase(selected.id())) {
+            if (CosmeticIdMatch.same(entry.id(), selected.id())) {
                 this.selected = entry;
                 return;
             }
@@ -1193,13 +1404,16 @@ public final class WardrobeScreen extends Screen {
     }
 
     private Component emptyMessage() {
+        // 先判搜索：有搜索词时"没有匹配"永远是最准确的解释。
+        // 旧顺序把"衣柜为空"放在最前面，于是"衣柜空 + 正在搜索"会显示"去网站加收藏"，
+        // 玩家会以为是收藏同步出了问题（其实只是关键词没命中）。
+        if (!query.isEmpty()) {
+            return Component.translatable("vmfashion.gui.empty.no_match");
+        }
         // 过滤生效但收藏为空：这是"衣柜里还没加东西"，必须引导去网站商店，
         // 而不是沿用"没装包"的文案（玩家会去翻 config/vmfashion/packs 找不存在的问题）
         if (wardrobeSource() == Source.FILTERED && safeCollectionSize() == 0) {
             return Component.translatable("vmfashion.gui.empty.wardrobe_empty");
-        }
-        if (!query.isEmpty()) {
-            return Component.translatable("vmfashion.gui.empty.no_match");
         }
         if (selectedCategory != null) {
             return Component.translatable("vmfashion.gui.empty.no_category");
@@ -1388,11 +1602,20 @@ public final class WardrobeScreen extends Screen {
      * @param category   分类（未安装时由服务端 categoryKey 解析，未知按 {@code other}）
      * @param packId     所属包 ID（未安装时用来判"下载中"角标，可能为空串）
      * @param definition 本地定义；{@code null} = 本地没装包
+     * @param missing    {@code true} = 这件时装在网站目录里<b>已删除 / 已停用</b>：
+     *                   界面要显示（玩家会问"我衣柜里的东西呢"）但<b>禁止穿戴、禁止触发下发</b>。
+     *                   注意它和"本地没装包"是两件事：{@code missing} 来自服务端，
+     *                   {@code definition == null} 来自本地注册表。
      */
     private record WardrobeEntry(String id, String name, CosmeticCategory category,
-                                 String packId, CosmeticDefinition definition) {
+                                 String packId, CosmeticDefinition definition, boolean missing) {
         boolean installed() {
             return definition != null;
+        }
+
+        /** 可穿戴 = 没下架。下架的时装后端一定会拒绝，界面不该给玩家"点了没反应"的错觉。 */
+        boolean equipable() {
+            return !missing;
         }
     }
 

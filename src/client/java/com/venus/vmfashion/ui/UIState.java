@@ -6,8 +6,10 @@ import com.venus.vmfashion.VMFashionClient;
 import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
+import java.nio.file.AtomicMoveNotSupportedException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -75,14 +77,31 @@ public class UIState {
     }
 
     /**
-     * 保存 UI 状态
+     * 保存 UI 状态。
+     *
+     * <p>先写同目录的 {@code .tmp} 再原子替换：{@code ui_state.json} 是在衣柜里切一次分类就写一次，
+     * 直接 {@code writeString} 覆盖的话，写到一半崩溃 / 断电会留下一个截断的 JSON，
+     * 下次启动读失败就退化成"不记忆分类"（而且玩家无法察觉原因）。
      */
     public void save() {
+        Path tmp = STATE_PATH.resolveSibling(STATE_PATH.getFileName() + ".tmp");
         try {
             Files.createDirectories(STATE_PATH.getParent());
-            Files.writeString(STATE_PATH, GSON.toJson(this));
+            Files.writeString(tmp, GSON.toJson(this));
+            try {
+                Files.move(tmp, STATE_PATH, StandardCopyOption.REPLACE_EXISTING,
+                        StandardCopyOption.ATOMIC_MOVE);
+            } catch (AtomicMoveNotSupportedException notAtomic) {
+                // 部分文件系统（网络盘 / 部分容器 overlay）不支持原子移动：退化成普通替换
+                Files.move(tmp, STATE_PATH, StandardCopyOption.REPLACE_EXISTING);
+            }
         } catch (IOException e) {
             VMFashionClient.LOGGER.error("保存 UI 状态失败", e);
+            try {
+                Files.deleteIfExists(tmp);
+            } catch (IOException ignored) {
+                // 清理临时文件失败无所谓，下次写入会覆盖它
+            }
         }
     }
 

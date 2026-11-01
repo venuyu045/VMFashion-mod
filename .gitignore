@@ -13,6 +13,10 @@ run/
 *.log
 logs/
 
+# ---- Python ----
+__pycache__/
+*.pyc
+
 # ---- 本地环境 / IDE ----
 local.properties
 .idea/
@@ -22,6 +26,14 @@ local.properties
 .settings/
 .vscode/
 .DS_Store
+
+# ---- AI agent 本地状态（skills 用 `npx skills experimental_install` 从 skills-lock.json 还原）----
+.claude/
+.codex/
+.cursor/
+
+# ---- 建模草稿（Blockbench MCP 的 .bbmodel 工作文件，产物在 build/ 里）----
+models/
 
 # ---- 内部文档（不公开：含服务器地址、内部实现细节、第三方调研）----
 /审查报告.md

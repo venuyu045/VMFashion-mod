@@ -33,7 +33,7 @@ import java.util.Map;
  * 玩家在网站商店里加进衣柜的时装和本地装了哪些包没有关系 —— 想让"游戏内衣柜 = 网站衣柜"，
  * 就必须有一份服务端下发的收藏清单。这个类就是那份清单的内存 + 磁盘镜像。
  *
- * <p><b>数据来源</b>：{@code GET /api/fashion/wardrobe/me}（见 {@code docs/fashion-api.md} §5.5），
+ * <p><b>数据来源</b>：{@code GET /api/fashion/wardrobe/me}（见 {@code docs/fashion-api.md} §3.5），
  * 由同步层（{@code sync/SyncService}）拉取后调用 {@link #replaceAll(boolean, List)}。
  *
  * <p><b>三种状态</b>（界面据此决定显示什么，绝不会让玩家"衣柜突然空了"）：
@@ -50,6 +50,10 @@ import java.util.Map;
  * <p><b>持久化</b>：{@code config/vmfashion/wardrobe.json}，原子写（写临时文件 → fsync → ATOMIC_MOVE）。
  * 有了它，断网 / 后端挂掉时进游戏仍然能按上次的收藏过滤，而不是突然显示全部。
  * 文件缺失 / 损坏 / 字段非法一律静默降级为"未加载"，绝不影响客户端启动。
+ *
+ * <p><b>防串号</b>：文件里记了这份收藏属于哪个身份（{@code owner} = MC UUID + 后端地址，
+ * 见 {@link #adoptOwner(String)}）。换号 / 换后端时旧收藏必须作废，否则 B 会看到 A 的衣柜
+ * （和 {@code FashionAuth#revalidateProfile()} 防的是同一类问题）。
  */
 public final class WardrobeCollection {
 
@@ -61,6 +65,17 @@ public final class WardrobeCollection {
     /** 数据格式版本，将来结构变化时用来做兼容。 */
     public static final int FORMAT_VERSION = 1;
 
+    /**
+     * 单份收藏最多接受的条目数。
+     *
+     * <p>为什么要上限：这份列表会进内存、进界面、进磁盘缓存，后端异常（或恶意后端）返回十万条
+     * 足以把渲染线程和堆拖死。{@code PackCatalog} 对清单也有同样的上限（{@code MAX_PACKS}）。
+     */
+    static final int MAX_ENTRIES = 4096;
+
+    /** 单个字段（cosmeticId / name / category / packId）的长度上限，防止一条脏数据把界面撑爆。 */
+    static final int MAX_FIELD_LENGTH = 200;
+
     private static final String FILE_NAME = "wardrobe.json";
     private static final String FORMAT_VERSION_KEY = "formatVersion";
     private static final String LINKED_KEY = "linked";
@@ -70,6 +85,8 @@ public final class WardrobeCollection {
     private static final String NAME_KEY = "name";
     private static final String CATEGORY_KEY = "category";
     private static final String PACK_ID_KEY = "packId";
+    private static final String MISSING_KEY = "missing";
+    private static final String OWNER_KEY = "owner";
     private static final String TEMP_PREFIX = "wardrobe-";
     private static final String TEMP_SUFFIX = ".json.tmp";
 
@@ -82,12 +99,26 @@ public final class WardrobeCollection {
      * <p>{@code cosmeticId} 是服务端的全局 ID（{@code <packId>:<localId>}）；本地可能<b>没有</b>
      * 装对应的包 —— 那种情况下界面仍然要列出它（名字 / 分类来自这里），点穿上会自动下载。
      *
-     * @param cosmeticId 全局 ID，非空
-     * @param name       展示名（服务端可能为空串，界面回落到 cosmeticId）
+     * @param cosmeticId  全局 ID，非空
+     * @param name        展示名（服务端可能为空串，界面回落到 cosmeticId）
      * @param categoryKey 分类 key（{@code cape}/{@code wings}/…，未知值界面按 other 处理）
-     * @param packId     所属时装包 ID（可能为空串）
+     * @param packId      所属时装包 ID（可能为空串）
+     * @param missing     {@code true} = 这件时装在网站目录里<b>已删除 / 已停用</b>：
+     *                    界面要显示（让玩家知道它还在衣柜里）但<b>禁止穿戴 / 禁止触发下发</b>，
+     *                    因为后端一定会拒绝（{@code unknown_cosmetic} / {@code cosmetic_disabled}）。
+     *                    注意它<b>不是</b>"本地没装包"——那个由客户端自己比对
+     *                    {@link CosmeticRegistry} 得出，与这个字段无关。
      */
-    public record Entry(String cosmeticId, String name, String categoryKey, String packId) {
+    public record Entry(String cosmeticId, String name, String categoryKey, String packId, boolean missing) {
+
+        /**
+         * 兼容 4 参构造（没有 missing 信息）：按 {@code missing=false} 处理。
+         *
+         * <p>保留它是为了不让"手里没有服务端字段"的调用方（测试、旧代码）被迫写第 5 个参数。
+         */
+        public Entry(String cosmeticId, String name, String categoryKey, String packId) {
+            this(cosmeticId, name, categoryKey, packId, false);
+        }
     }
 
     /** {@link #parse(JsonObject)} 的结果。 */
@@ -104,6 +135,8 @@ public final class WardrobeCollection {
     private volatile Map<String, String> shortAliases = Map.of();
     /** 最近一次成功拉取的时间（毫秒），0 = 从磁盘读的 / 没拉过。 */
     private volatile long fetchedAtMs;
+    /** 这份收藏属于哪个身份（{@code mcUuid|apiBaseUrl}）；空串 = 未知（老缓存 / 还没登录）。 */
+    private volatile String owner = "";
 
     private WardrobeCollection() {
     }
@@ -127,6 +160,11 @@ public final class WardrobeCollection {
         return fetchedAtMs;
     }
 
+    /** 这份收藏属于哪个身份（{@code mcUuid|apiBaseUrl}）；空串表示未知。 */
+    public String owner() {
+        return owner;
+    }
+
     /** 当前收藏快照（不可变列表，可以安全地在渲染线程遍历）。 */
     public List<Entry> entries() {
         return entries;
@@ -134,6 +172,17 @@ public final class WardrobeCollection {
 
     public int size() {
         return entries.size();
+    }
+
+    /** 收藏里有多少件是"目录已删除 / 已停用"（界面状态行与 diag 用）。 */
+    public int missingCount() {
+        int count = 0;
+        for (Entry entry : entries) {
+            if (entry.missing()) {
+                count++;
+            }
+        }
+        return count;
     }
 
     /** 界面是否应该按收藏过滤：已绑定 + 已加载。配置开关由调用方（界面）再判一次。 */
@@ -149,21 +198,52 @@ public final class WardrobeCollection {
      * 直接字符串比较会漏掉这种数据。
      */
     public boolean contains(String cosmeticId) {
+        return findEntry(cosmeticId) != null;
+    }
+
+    /**
+     * 这件时装是否"已下架"（服务端目录里已删除 / 已停用）。
+     *
+     * <p>口径与 {@link #contains(String)} 完全一致（全局 ID 或唯一短 ID，大小写不敏感）。
+     * <b>没收藏不算已下架</b>：找不到条目时返回 {@code false}。
+     *
+     * <p>调用方（界面 / 命令）拿到 {@code true} 时应当：显示但禁止穿戴、禁止触发时装包下发 ——
+     * 后端对已下架时装一定会拒绝，硬穿只会给玩家一条"穿上失败"的报错。
+     */
+    public boolean isMissing(String cosmeticId) {
+        Entry entry = findEntry(cosmeticId);
+        return entry != null && entry.missing();
+    }
+
+    /**
+     * 按 ID 查收藏条目（全局 ID 或唯一短 ID，大小写不敏感）。
+     *
+     * @return 命中的条目；没收藏 / 参数非法 / 短 ID 有歧义时返回 {@code null}
+     */
+    public Entry findEntry(String cosmeticId) {
         if (cosmeticId == null || cosmeticId.isBlank()) {
-            return false;
+            return null;
         }
         String needle = cosmeticId.trim();
         List<Entry> current = entries;
         if (current.isEmpty()) {
-            return false;
+            return null;
         }
         for (Entry entry : current) {
             if (entry.cosmeticId().equalsIgnoreCase(needle)) {
-                return true;
+                return entry;
             }
         }
         String alias = shortAliases.get(needle.toLowerCase(Locale.ROOT));
-        return alias != null;
+        if (alias == null) {
+            return null;
+        }
+        for (Entry entry : current) {
+            if (entry.cosmeticId().equalsIgnoreCase(alias)) {
+                return entry;
+            }
+        }
+        return null;
     }
 
     // ==================== 写 ====================
@@ -189,7 +269,7 @@ public final class WardrobeCollection {
      * 解析 {@code GET /api/fashion/wardrobe/me} 的响应体。
      *
      * <p>防御式解析：缺字段 / 类型不对的条目直接跳过，绝不让一条坏数据毁掉整份收藏。
-     * 契约见 {@code docs/fashion-api.md} §5.5：
+     * 契约见 {@code docs/fashion-api.md} §3.5：
      * <pre>
      * { "linked": true,
      *   "items": [ { "cosmeticId": "lw_angel:angel", "name": "Angel Wings",
@@ -205,7 +285,12 @@ public final class WardrobeCollection {
         JsonElement items = json.get(ITEMS_KEY);
         if (items != null && items.isJsonArray()) {
             JsonArray array = items.getAsJsonArray();
-            for (JsonElement element : array) {
+            int limit = Math.min(array.size(), MAX_ENTRIES);
+            if (array.size() > MAX_ENTRIES) {
+                LOGGER.warn("网站衣柜返回了 {} 条收藏，超过上限 {}，多余的已忽略", array.size(), MAX_ENTRIES);
+            }
+            for (int i = 0; i < limit; i++) {
+                JsonElement element = array.get(i);
                 if (element == null || !element.isJsonObject()) {
                     continue;
                 }
@@ -215,7 +300,15 @@ public final class WardrobeCollection {
                 }
             }
         }
-        return new Parsed(linked, normalize(parsed));
+        List<Entry> normalized = normalize(parsed);
+        // 契约要求 linked=false 时 items 必须为空。老后端 / 自建后端可能压根不返回 linked 字段，
+        // 这时如果给了条目，按"已绑定"处理：否则界面会退回"本地全部"，
+        // 玩家在网站加的衣柜看起来完全没生效（比"多显示几件"难排查得多）。
+        if (!linked && !normalized.isEmpty() && !hasNonNull(json, LINKED_KEY)) {
+            LOGGER.debug("网站衣柜响应没有 linked 字段但有 {} 条收藏，按已绑定处理", normalized.size());
+            linked = true;
+        }
+        return new Parsed(linked, normalized);
     }
 
     /** 清空（测试 / 切账号时用）。不影响磁盘文件，需要的话再 {@link #saveNow()}。 */
@@ -226,7 +319,69 @@ public final class WardrobeCollection {
             this.linked = false;
             this.loaded = false;
             this.fetchedAtMs = 0L;
+            this.owner = "";
         }
+    }
+
+    /**
+     * 采纳当前身份（{@code mcUuid|apiBaseUrl}），身份变了就丢弃旧收藏。
+     *
+     * <p>为什么必须做：{@code wardrobe.json} 是<b>整机</b>共享的，换 MC 账号 / 换后端地址之后
+     * 旧账号的收藏仍然在内存和磁盘里 —— 新账号在断网时会看到上一个账号的衣柜（隐私 + 误导）。
+     * 这和 {@code FashionAuth#revalidateProfile()} 防的"把 A 的穿戴写进 B"是同一类问题。
+     *
+     * <p>三种情况：
+     * <ul>
+     *   <li>{@code currentOwner} 为空（客户端还没准备好 / 单测）：什么都不做；</li>
+     *   <li>旧缓存没有 owner 字段（v1.3.0 升级上来的）：只补记 owner，<b>不清理</b>，免得玩家白丢一次缓存；</li>
+     *   <li>owner 确实变了：清内存 + 删磁盘缓存（下次进服重新拉）。</li>
+     * </ul>
+     *
+     * @return {@code true} = 因为换了身份而丢弃了旧收藏
+     */
+    public boolean adoptOwner(String currentOwner) {
+        String next = currentOwner == null ? "" : currentOwner.trim();
+        if (next.isEmpty()) {
+            return false;
+        }
+        synchronized (WRITE_LOCK) {
+            String previous = owner;
+            if (next.equalsIgnoreCase(previous)) {
+                return false;
+            }
+            owner = next;
+            if (!shouldDiscardForOwner(previous, next)) {
+                LOGGER.info("衣柜收藏缓存没有身份标记，已归属当前身份（不清理，下次刷新会覆盖）: {}", next);
+                return false;
+            }
+            boolean hadData = loaded || !entries.isEmpty();
+            entries = List.of();
+            shortAliases = Map.of();
+            linked = false;
+            loaded = false;
+            fetchedAtMs = 0L;
+            if (hadData) {
+                LOGGER.info("检测到时装衣柜属于另一个身份（{} → {}），已丢弃旧收藏", previous, next);
+            }
+            deleteFileQuietly();
+            return hadData;
+        }
+    }
+
+    /**
+     * 是否应当因为身份变化丢弃缓存（纯逻辑，可单测）。
+     *
+     * <p>只有"旧身份和新身份都知道、且确实不同"时才丢：旧缓存没有身份标记（升级上来的）
+     * 或者新身份未知（客户端还没初始化）都不丢 —— 丢错的代价是玩家白等一次网络刷新。
+     */
+    static boolean shouldDiscardForOwner(String storedOwner, String currentOwner) {
+        if (storedOwner == null || storedOwner.isBlank()) {
+            return false;
+        }
+        if (currentOwner == null || currentOwner.isBlank()) {
+            return false;
+        }
+        return !storedOwner.trim().equalsIgnoreCase(currentOwner.trim());
     }
 
     // ==================== 磁盘 ====================
@@ -261,8 +416,15 @@ public final class WardrobeCollection {
                 return -1;
             }
             JsonObject root = parsed.getAsJsonObject();
+            int formatVersion = (int) asLong(root.get(FORMAT_VERSION_KEY), FORMAT_VERSION);
+            if (formatVersion > FORMAT_VERSION) {
+                // 未来版本写的文件：字段名是向后兼容的（只增不改），照常读，只提示一句
+                LOGGER.warn("衣柜收藏缓存的 formatVersion={} 高于本 mod 支持的 {}，可能有字段无法识别: {}",
+                        formatVersion, FORMAT_VERSION, path);
+            }
             boolean fileLinked = asBoolean(root.get(LINKED_KEY), false);
             long fileFetchedAt = asLong(root.get(FETCHED_AT_KEY), 0L);
+            String fileOwner = asString(root.get(OWNER_KEY));
             List<Entry> restored = new ArrayList<>();
             JsonElement items = root.get(ITEMS_KEY);
             if (items != null && items.isJsonArray()) {
@@ -284,6 +446,7 @@ public final class WardrobeCollection {
                 this.loaded = true;
                 // 磁盘上的 fetchedAt 只用于"多久没刷新"的判断，不代表这次真的拉成功了
                 this.fetchedAtMs = fileFetchedAt;
+                this.owner = fileOwner;
             }
             LOGGER.info("已从 {} 恢复 {} 件衣柜收藏", path, normalized.size());
             return normalized.size();
@@ -345,6 +508,19 @@ public final class WardrobeCollection {
         }
     }
 
+    /** 删掉默认缓存文件（换身份 / 清理时用）；失败只记 debug。 */
+    private static void deleteFileQuietly() {
+        Path path = file();
+        if (path == null) {
+            return;
+        }
+        try {
+            Files.deleteIfExists(path);
+        } catch (IOException e) {
+            LOGGER.debug("删除衣柜收藏缓存失败（忽略）: {} ({})", path, e.toString());
+        }
+    }
+
     // ==================== 内部 ====================
 
     private JsonObject toJson() {
@@ -352,6 +528,7 @@ public final class WardrobeCollection {
         root.addProperty(FORMAT_VERSION_KEY, FORMAT_VERSION);
         root.addProperty(LINKED_KEY, linked);
         root.addProperty(FETCHED_AT_KEY, fetchedAtMs);
+        root.addProperty(OWNER_KEY, owner);
         JsonArray array = new JsonArray();
         for (Entry entry : entries) {
             JsonObject item = new JsonObject();
@@ -359,6 +536,8 @@ public final class WardrobeCollection {
             item.addProperty(NAME_KEY, entry.name());
             item.addProperty(CATEGORY_KEY, entry.categoryKey());
             item.addProperty(PACK_ID_KEY, entry.packId());
+            // missing 必须落盘：否则重启后"已下架"变成"可穿戴"，界面又会允许穿一件穿不上的时装
+            item.addProperty(MISSING_KEY, entry.missing());
             array.add(item);
         }
         root.add(ITEMS_KEY, array);
@@ -367,19 +546,20 @@ public final class WardrobeCollection {
 
     /** 单条解析：{@code cosmeticId} 为空的一律丢弃（没有 ID 的条目没法穿戴 / 匹配）。 */
     private static Entry entryFromJson(JsonObject item) {
-        String id = asString(item.get(COSMETIC_ID_KEY));
+        String id = truncate(asString(item.get(COSMETIC_ID_KEY)));
         if (id.isBlank()) {
             return null;
         }
         return new Entry(
                 id,
-                asString(item.get(NAME_KEY)),
-                asString(item.get(CATEGORY_KEY)).toLowerCase(Locale.ROOT),
-                asString(item.get(PACK_ID_KEY)));
+                truncate(asString(item.get(NAME_KEY))),
+                truncate(asString(item.get(CATEGORY_KEY))).toLowerCase(Locale.ROOT),
+                truncate(asString(item.get(PACK_ID_KEY))),
+                asBoolean(item.get(MISSING_KEY), false));
     }
 
     /**
-     * 规范化：去空白、去重（同一 cosmeticId 只留第一条）、丢掉空 ID。
+     * 规范化：去空白、去重（同一 cosmeticId 只留第一条）、丢掉空 ID、限条数与字段长度。
      *
      * <p>去重是必须的：服务端理论上唯一，但历史数据 / 手工改过的缓存可能重复，
      * 重复条目会让界面出现两张一样的卡。
@@ -393,7 +573,10 @@ public final class WardrobeCollection {
             if (entry == null || entry.cosmeticId() == null) {
                 continue;
             }
-            String id = entry.cosmeticId().trim();
+            if (unique.size() >= MAX_ENTRIES) {
+                break;
+            }
+            String id = truncate(entry.cosmeticId().trim());
             if (id.isEmpty()) {
                 continue;
             }
@@ -401,10 +584,10 @@ public final class WardrobeCollection {
             if (unique.containsKey(key)) {
                 continue;
             }
-            String name = entry.name() == null ? "" : entry.name().trim();
-            String category = entry.categoryKey() == null ? "" : entry.categoryKey().trim();
-            String packId = entry.packId() == null ? "" : entry.packId().trim();
-            unique.put(key, new Entry(id, name, category, packId));
+            String name = truncate(entry.name() == null ? "" : entry.name().trim());
+            String category = truncate(entry.categoryKey() == null ? "" : entry.categoryKey().trim());
+            String packId = truncate(entry.packId() == null ? "" : entry.packId().trim());
+            unique.put(key, new Entry(id, name, category, packId, entry.missing()));
         }
         return List.copyOf(unique.values());
     }
@@ -439,6 +622,14 @@ public final class WardrobeCollection {
                 : cosmeticId;
     }
 
+    /** 截断超长字段（保留前缀，够界面展示 / 匹配用）；不做 trim。 */
+    private static String truncate(String value) {
+        if (value == null) {
+            return "";
+        }
+        return value.length() <= MAX_FIELD_LENGTH ? value : value.substring(0, MAX_FIELD_LENGTH);
+    }
+
     private static String asString(JsonElement element) {
         if (element == null || element.isJsonNull()) {
             return "";
@@ -450,6 +641,10 @@ public final class WardrobeCollection {
         }
     }
 
+    private static boolean hasNonNull(JsonObject json, String key) {
+        return json != null && json.has(key) && !json.get(key).isJsonNull();
+    }
+
     private static boolean asBoolean(JsonElement element, boolean fallback) {
         if (element == null || element.isJsonNull()) {
             return fallback;
@@ -457,7 +652,7 @@ public final class WardrobeCollection {
         try {
             return element.getAsBoolean();
         } catch (Exception e) {
-            // 后端把 linked 写成 "true" 字符串时也认
+            // 后端把 linked / missing 写成 "true" 字符串时也认
             try {
                 return Boolean.parseBoolean(element.getAsString().trim());
             } catch (Exception ignored) {

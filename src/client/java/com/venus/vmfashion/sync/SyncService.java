@@ -62,6 +62,28 @@ public final class SyncService {
     /** 衣柜收藏拉取失败后的退避起点（连续失败按 2 倍递增，封顶 {@link #WARDROBE_REFRESH_INTERVAL_MS}）。 */
     private static final long WARDROBE_BACKOFF_BASE_MS = 30_000L;
 
+    /**
+     * {@link #refreshWardrobe(boolean)} 的结果。
+     *
+     * <p>为什么要返回值：玩家主动执行 {@code /vmfashion wardrobe refresh} 时，旧实现无论
+     * "没登录 / 后端没这个端点 / 正在退避 / 已有请求在飞"都静默返回 —— 命令只打印了
+     * "正在刷新…"，然后什么都不会发生，玩家以为卡住了。命令层据此给出真实原因。
+     */
+    public enum WardrobeRefreshResult {
+        /** 已经发出请求（成功 / 失败都会在回调里处理，玩家会收到后续提示）。 */
+        DISPATCHED,
+        /** 已有请求在飞，这次没有重复发（玩家视角等价于"正在刷新"）。 */
+        IN_FLIGHT,
+        /** 同步层没启用（纯本地模式 / 未配置后端）。 */
+        NOT_ENABLED,
+        /** 还没登录时装后端（没有 token）。 */
+        NOT_LOGGED_IN,
+        /** 后端没有 {@code /wardrobe/me} 端点，本会话不再尝试。 */
+        ENDPOINT_UNSUPPORTED,
+        /** 上次失败后的退避窗口内。 */
+        BACKING_OFF
+    }
+
     private volatile FashionApi api;
     private volatile FashionAuth auth;
     private volatile HttpLoadoutProvider provider;
@@ -92,6 +114,8 @@ public final class SyncService {
     private final AtomicInteger wardrobeFailureStreak = new AtomicInteger();
     /** 后端已确认没有 {@code /wardrobe/me} 端点 → 本次会话不再重试（避免每 5 分钟刷一次 404）。 */
     private volatile boolean wardrobeEndpointUnsupported;
+    /** 那次"没有该端点"的 HTTP 状态码（404/405/501），0 = 还没遇到过；只用于给玩家/诊断看具体原因。 */
+    private volatile int wardrobeUnsupportedStatus;
     /** 上一次发起衣柜收藏拉取的时间戳（tick 用它做 5 分钟节流）。 */
     private volatile long lastWardrobeRefreshAtMs;
     /** 退避截止时间戳：在此之前不发请求。 */
@@ -142,6 +166,9 @@ public final class SyncService {
         lastRefreshAtMs = 0L;
         lastProfileCheckAtMs = 0L;
         resetWardrobeSyncState();
+        // 读盘之后（VMFashionClient 已在 initialize 之前 loadFromDisk）核对这份收藏还是不是当前身份的：
+        // 换号 / 换后端后旧收藏必须作废，否则断网时会把上一个账号的衣柜显示给新账号
+        adoptWardrobeOwner();
 
         LoadoutService.getInstance().setProvider(newProvider);
         // 后端可用时以远端数据为准：没有远端记录的玩家 = 没穿时装。
@@ -313,6 +340,8 @@ public final class SyncService {
         lastProfileCheckAtMs = now;
         // 衣柜收藏同理：进服时拉一次，随后由 tick 每 5 分钟续命
         lastWardrobeRefreshAtMs = now;
+        // 进服是"换号"最可能发生的时刻：先把收藏归属核对一遍，再谈刷新
+        adoptWardrobeOwner();
         if (!enabled) {
             return;
         }
@@ -808,9 +837,11 @@ public final class SyncService {
      *
      * @param notifyChat 失败时是否在聊天栏提示（玩家主动触发的刷新传 {@code true}，
      *                   进服 / 定时刷新传 {@code false}）
+     * @return 这次调用到底做了什么（{@link WardrobeRefreshResult#DISPATCHED} 表示请求已发出）；
+     *         玩家主动刷新时命令层用它决定要不要提示"为什么没刷新"
      */
-    public void refreshWardrobe(boolean notifyChat) {
-        refreshWardrobe(notifyChat, true);
+    public WardrobeRefreshResult refreshWardrobe(boolean notifyChat) {
+        return refreshWardrobe(notifyChat, true);
     }
 
     /**
@@ -843,27 +874,62 @@ public final class SyncService {
     }
 
     /**
+     * 这次刷新会不会真的发请求（纯逻辑，可单测）。
+     *
+     * <p>抽成静态方法是为了让单测直接断言"未登录 / 端点不支持 / 退避中 / 在飞"这四种跳过原因，
+     * 不用起 HTTP、也不用碰 Minecraft 类。
+     *
+     * @param enabled             同步层是否启用
+     * @param hasApi              是否有 {@link FashionApi}
+     * @param hasAuth             是否有 {@link FashionAuth}
+     * @param hasToken            是否已有 token
+     * @param endpointUnsupported 后端是否已确认没有 {@code /wardrobe/me}
+     * @param now                 当前时间戳
+     * @param backoffUntilMs      退避截止时间戳
+     * @param inFlight            是否已有请求在飞
+     */
+    static WardrobeRefreshResult evaluateWardrobeRefresh(boolean enabled, boolean hasApi, boolean hasAuth,
+                                                         boolean hasToken, boolean endpointUnsupported,
+                                                         long now, long backoffUntilMs, boolean inFlight) {
+        if (!enabled || !hasApi || !hasAuth) {
+            return WardrobeRefreshResult.NOT_ENABLED;
+        }
+        if (!hasToken) {
+            // 认证成功的回调会重新触发，这里不排队
+            return WardrobeRefreshResult.NOT_LOGGED_IN;
+        }
+        if (endpointUnsupported) {
+            // 后端版本没有这个端点：本会话不再重试（info 已经记过一次）
+            return WardrobeRefreshResult.ENDPOINT_UNSUPPORTED;
+        }
+        if (inFlight) {
+            // 已有请求在飞（tick / 界面 / 进服可能同时触发）
+            return WardrobeRefreshResult.IN_FLIGHT;
+        }
+        if (now < backoffUntilMs) {
+            // 退避窗口内：失败后不刷屏
+            return WardrobeRefreshResult.BACKING_OFF;
+        }
+        return WardrobeRefreshResult.DISPATCHED;
+    }
+
+    /**
      * @param allowReauthRetry 401 时是否允许"重新认证 → 再拉一次"（重试的那次传 {@code false}）
      */
-    private void refreshWardrobe(boolean notifyChat, boolean allowReauthRetry) {
+    private WardrobeRefreshResult refreshWardrobe(boolean notifyChat, boolean allowReauthRetry) {
         FashionApi currentApi = api;
         FashionAuth currentAuth = auth;
-        // 没启用 / 没 api / 没 token：安静返回。认证成功后的回调会重新触发，不需要在这里排队
-        if (!enabled || currentApi == null || currentAuth == null || !currentApi.hasToken()) {
-            return;
-        }
-        if (wardrobeEndpointUnsupported) {
-            // 后端版本没有这个端点：本会话不再重试（info 已经记过一次）
-            return;
-        }
         long now = System.currentTimeMillis();
-        if (now < wardrobeBackoffUntilMs) {
-            // 退避窗口内：失败后不刷屏
-            return;
+        WardrobeRefreshResult precheck = evaluateWardrobeRefresh(enabled, currentApi != null,
+                currentAuth != null, currentApi != null && currentApi.hasToken(),
+                wardrobeEndpointUnsupported, now, wardrobeBackoffUntilMs,
+                wardrobeRefreshInFlight.get());
+        if (precheck != WardrobeRefreshResult.DISPATCHED) {
+            return precheck;
         }
         if (!wardrobeRefreshInFlight.compareAndSet(false, true)) {
-            // 已有请求在飞（tick / 界面 / 进服可能同时触发）
-            return;
+            // 上面那次 get() 与这次 CAS 之间被别人抢了
+            return WardrobeRefreshResult.IN_FLIGHT;
         }
         lastWardrobeRefreshAtMs = now;
         long epoch = wardrobeEpoch;
@@ -874,7 +940,7 @@ public final class SyncService {
             // wardrobeMine 内部已经 guarded，这里只是兜底，保证防重入标志一定被释放
             wardrobeRefreshInFlight.set(false);
             handleWardrobeFailure(t, notifyChat, allowReauthRetry);
-            return;
+            return WardrobeRefreshResult.DISPATCHED;
         }
         future.whenComplete((json, throwable) -> {
             wardrobeRefreshInFlight.set(false);
@@ -888,6 +954,7 @@ public final class SyncService {
             }
             applyWardrobe(json, notifyChat);
         });
+        return WardrobeRefreshResult.DISPATCHED;
     }
 
     /**
@@ -900,14 +967,16 @@ public final class SyncService {
         try {
             WardrobeCollection.Parsed parsed = WardrobeCollection.parse(json);
             WardrobeCollection collection = WardrobeCollection.getInstance();
+            // 落盘前先把这份收藏归属到当前身份：换号 / 换后端后旧收藏不能继续生效（见 adoptOwner）
+            collection.adoptOwner(currentWardrobeOwnerKey());
             collection.replaceAll(parsed.linked(), parsed.entries());
             // 落盘缓存：断网 / 后端挂掉时下次进游戏仍能按收藏过滤。
             // 失败只记日志（saveNow 内部吞异常），内存镜像已经生效
             collection.saveNow();
             wardrobeFailureStreak.set(0);
             wardrobeBackoffUntilMs = 0L;
-            VMFashionClient.LOGGER.debug("已同步网站衣柜收藏: {} 件（linked={}）",
-                    parsed.entries().size(), parsed.linked());
+            VMFashionClient.LOGGER.debug("已同步网站衣柜收藏: {} 件（linked={}，已下架 {} 件）",
+                    parsed.entries().size(), parsed.linked(), collection.missingCount());
             if (notifyChat) {
                 // 玩家主动刷新：成功也要有反馈，否则命令敲下去像没生效
                 ChatUtil.showLocalMessage(parsed.linked()
@@ -928,7 +997,13 @@ public final class SyncService {
         if (isWardrobeEndpointUnsupported(status)) {
             // 后端版本没实现这个端点：只记一次，本会话不再重试（否则每 5 分钟一条 404）
             wardrobeEndpointUnsupported = true;
+            wardrobeUnsupportedStatus = status;
             VMFashionClient.LOGGER.info("时装后端没有 /wardrobe/me 端点（HTTP {}），本会话不再刷新衣柜收藏", status);
+            if (notifyChat) {
+                // 玩家手动刷新时不能静默：否则"正在刷新…"之后再无下文，看起来像卡死
+                ChatUtil.showLocalMessage(Component.translatable("vmfashion.command.wardrobe.refresh_failed",
+                        Component.translatable("vmfashion.error.unexpected", "http_" + status)));
+            }
             return;
         }
         if (isUnauthorized(throwable)) {
@@ -996,9 +1071,87 @@ public final class SyncService {
     private void resetWardrobeSyncState() {
         wardrobeEpoch++;
         wardrobeEndpointUnsupported = false;
+        wardrobeUnsupportedStatus = 0;
         lastWardrobeRefreshAtMs = 0L;
         wardrobeBackoffUntilMs = 0L;
         wardrobeFailureStreak.set(0);
+    }
+
+    /**
+     * 当前身份 key（{@code mcUuid|apiBaseUrl}），用来判断"这份衣柜收藏还是不是我的"。
+     *
+     * <p>为什么把后端地址也算进去：同一个 MC 身份在不同后端上对应<b>不同的网站账号</b>，
+     * 换后端后旧后端拉下来的收藏必须作废，否则玩家会看到另一套账号的衣柜。
+     *
+     * @return 身份 key；客户端还没准备好 / 纯本地模式（没有后端地址）时返回空串（调用方不做清理）
+     */
+    private static String currentWardrobeOwnerKey() {
+        UUID profileId = FashionAuth.currentProfileId();
+        if (profileId == null) {
+            return "";
+        }
+        String baseUrl = apiBaseUrlOfCurrentConfig();
+        if (baseUrl.isEmpty()) {
+            return "";
+        }
+        return profileId.toString().toLowerCase(Locale.ROOT) + "|" + baseUrl;
+    }
+
+    /** 当前配置里的后端地址（小写，去尾部斜杠）；拿不到时返回空串。 */
+    private static String apiBaseUrlOfCurrentConfig() {
+        ModConfig config = currentConfig();
+        String baseUrl = config == null ? "" : config.getApiBaseUrl();
+        if (baseUrl == null) {
+            return "";
+        }
+        String normalized = baseUrl.trim().toLowerCase(Locale.ROOT);
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        return normalized;
+    }
+
+    /**
+     * 把衣柜收藏归属到当前身份（换号 / 换后端时丢弃旧收藏）。
+     *
+     * <p>调用点：{@link #initialize(ModConfig)}（启动时读盘后）与 {@link #onJoin()}（换号后）。
+     * 为什么不能只在成功拉取后做：断网时永远拉不到，旧账号的收藏就会一直显示给新账号。
+     */
+    private void adoptWardrobeOwner() {
+        try {
+            WardrobeCollection.getInstance().adoptOwner(currentWardrobeOwnerKey());
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.debug("校验衣柜收藏归属失败（忽略）: {}", t.toString());
+        }
+    }
+
+    /**
+     * 衣柜收藏同步的内部状态摘要（纯文本，只给 {@code /vmfashion diag} 用）。
+     *
+     * <p>为什么单独给一个方法：{@code /vmfashion wardrobe} 是玩家看的（要 i18n），
+     * diag 是开发者看的（纯文本，直接读字段最直观），两者不共用文案。
+     */
+    public String describeWardrobeSyncState() {
+        long now = System.currentTimeMillis();
+        long backoffRemaining = Math.max(0L, wardrobeBackoffUntilMs - now);
+        return "enabled=" + enabled
+                + ", token=" + (api != null && api.hasToken())
+                + ", endpointUnsupported=" + wardrobeEndpointUnsupported
+                + ", unsupportedStatus=" + wardrobeUnsupportedStatus
+                + ", inFlight=" + wardrobeRefreshInFlight.get()
+                + ", failureStreak=" + wardrobeFailureStreak.get()
+                + ", backoffRemainingMs=" + backoffRemaining
+                + ", lastAttemptAt=" + lastWardrobeRefreshAtMs
+                + ", epoch=" + wardrobeEpoch;
+    }
+
+    /**
+     * 后端"没有 {@code /wardrobe/me} 端点"的状态码（404 / 405 / 501）；{@code 0} = 还没遇到过。
+     *
+     * <p>给命令层把原因说清楚用（{@code /vmfashion wardrobe refresh} 不能只说"失败了"）。
+     */
+    public int wardrobeUnsupportedStatus() {
+        return wardrobeUnsupportedStatus;
     }
 
     /**

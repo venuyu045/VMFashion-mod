@@ -27,6 +27,7 @@ import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.minecraft.client.Minecraft;
 import net.minecraft.commands.CommandBuildContext;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.MutableComponent;
 
 import java.nio.file.Path;
 import java.util.Map;
@@ -208,13 +209,35 @@ public final class FashionCommand {
     private static int wardrobeStatus(FabricClientCommandSource source) {
         WardrobeCollection collection = WardrobeCollection.getInstance();
         source.sendFeedback(feedback("vmfashion.command.wardrobe.header"));
-        source.sendFeedback(feedback(collection.linked()
-                ? "vmfashion.command.wardrobe.linked"
-                : "vmfashion.command.wardrobe.unlinked"));
-        source.sendFeedback(feedback("vmfashion.command.wardrobe.count", collection.size()));
+        // 只有"已经加载过"时 linked 才有意义：没加载过时 linked 恒为 false，
+        // 直接打"未绑定网站账号"会骗玩家去绑定页（其实只是还没拉到，见下面 filter_unloaded 那行）
+        if (collection.loaded()) {
+            source.sendFeedback(feedback(collection.linked()
+                    ? "vmfashion.command.wardrobe.linked"
+                    : "vmfashion.command.wardrobe.unlinked"));
+        }
+        source.sendFeedback(wardrobeCountLine(collection));
         source.sendFeedback(wardrobeFetchedLine(collection));
         source.sendFeedback(wardrobeFilterLine(collection));
         return 1;
+    }
+
+    /**
+     * 收藏件数行；有"目录已下架"的条目时在同一行追加 {@code · 已下架 N}。
+     *
+     * <p>为什么要单独显示：已下架的时装在界面里是灰的、点不动，玩家看到"收藏 5 件"却只能穿 3 件
+     * 会以为 mod 坏了。命令里直接说清"其中 N 件已下架"，和衣柜状态行（GUI）口径一致。
+     *
+     * <p>复用 GUI 已有的 {@code vmfashion.gui.source.removed}（" · 已下架 %s" / " · %s removed"），
+     * 不新增 lang key。
+     */
+    private static Component wardrobeCountLine(WardrobeCollection collection) {
+        MutableComponent line = Component.translatable("vmfashion.command.wardrobe.count", collection.size());
+        int missing = collection.missingCount();
+        if (missing > 0) {
+            line.append(Component.translatable("vmfashion.gui.source.removed", missing));
+        }
+        return ChatUtil.prefixed(line);
     }
 
     /** 上次刷新时间：从未 / 刚刚 / N 分钟前。 */
@@ -249,17 +272,49 @@ public final class FashionCommand {
      *
      * <p>这里只发"正在刷新"的提示：真正的成功 / 失败文案由同步层在回调里发
      * （{@code vmfashion.chat.wardrobe_refreshed} 等），命令侧不重复报一遍结果。
+     *
+     * <p>但"根本没发出去"（没登录 / 后端没这个端点 / 正在退避）必须当场说清楚：
+     * 旧实现无条件先打"正在刷新…"，然后在同步层静默 return，玩家以为命令卡死了。
      */
     private static int wardrobeRefresh(FabricClientCommandSource source) {
-        source.sendFeedback(feedback("vmfashion.chat.wardrobe_refreshing"));
+        SyncService.WardrobeRefreshResult result;
         try {
-            SyncService.getInstance().refreshWardrobe(true);
+            result = SyncService.getInstance().refreshWardrobe(true);
         } catch (Throwable t) {
             VMFashionClient.LOGGER.warn("刷新衣柜收藏失败: {}", t.toString());
             source.sendFeedback(feedback("vmfashion.command.wardrobe.refresh_failed", String.valueOf(t)));
             return 0;
         }
-        return 1;
+        if (result == SyncService.WardrobeRefreshResult.DISPATCHED
+                || result == SyncService.WardrobeRefreshResult.IN_FLIGHT) {
+            // 请求已发出（或已有一次在飞）：结果由同步层回调给玩家
+            source.sendFeedback(feedback("vmfashion.chat.wardrobe_refreshing"));
+            return 1;
+        }
+        // 没发出请求：必须给出原因，否则玩家只能看到一片安静
+        source.sendFeedback(feedback("vmfashion.command.wardrobe.refresh_failed",
+                wardrobeSkipReason(result)));
+        return 0;
+    }
+
+    /**
+     * "这次没发请求"的原因文案。
+     *
+     * <p>全部复用语言文件里已有的 key（本轮不允许改 {@code src/main/resources}）：
+     * 未配置后端 / 未登录 / 后端没有该端点 / 退避中四种情况各自都有现成文案。
+     */
+    private static Component wardrobeSkipReason(SyncService.WardrobeRefreshResult result) {
+        return switch (result) {
+            // 与 /vmfashion sync 用同一条文案（同一种"同步层没启用"的情况）
+            case NOT_ENABLED -> Component.translatable("vmfashion.command.local_only");
+            case NOT_LOGGED_IN -> Component.translatable("vmfashion.error.no_token");
+            case ENDPOINT_UNSUPPORTED -> {
+                int status = SyncService.getInstance().wardrobeUnsupportedStatus();
+                yield Component.translatable("vmfashion.error.unexpected", "http_" + (status <= 0 ? 404 : status));
+            }
+            case BACKING_OFF -> Component.translatable("vmfashion.error.circuit_open");
+            default -> Component.translatable("vmfashion.error.unexpected", "?");
+        };
     }
 
     /**

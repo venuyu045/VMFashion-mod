@@ -39,7 +39,7 @@ com.venus.vmfashion
 │   ├── CosmeticResourceId     ID → 资源路径（可读部分 + CRC32，避免撞车）
 │   ├── LocalLoadout           本地玩家的穿戴（分类 → 时装 ID，内存）
 │   ├── LoadoutStore           loadout.json 原子写 + debounce
-│   └── WardrobeCollection     网站「我的衣柜」收藏的本地镜像（wardrobe.json，v1.3.0）
+│   └── WardrobeCollection     网站「我的衣柜」收藏的本地镜像（wardrobe.json，v1.3.0；v1.3.1 起记录 owner / missing）
 ├── render/                    ★ 渲染层
 │   ├── CosmeticAssets         磁盘 .geo.json → BakedGeoModel；PNG → DynamicTexture
 │   ├── CosmeticRenderDispatcher 每帧入口：查穿戴 → 坐标换算 → 提交几何

@@ -41,14 +41,64 @@ public final class LocalLoadout {
      * 先把 ID 记进穿戴表（渲染层找不到定义就什么都不画，等包下发完重新扫描后自动生效），
      * 再触发时装包下载（调用方负责）。
      *
-     * <p>参数为空 / 空白时直接忽略：宁可什么都不做，也不要往穿戴表里塞脏 key。
+     * <p>参数为空 / 空白 / 超长 / 含控制字符时直接忽略：宁可什么都不做，也不要往穿戴表里塞脏 key。
+     * 这一点很重要 —— 这个方法是<b>唯一</b>能绕开 {@link CosmeticDefinition} 直接写穿戴表的入口，
+     * 而它的入参来自服务端下发的收藏列表（{@code WardrobeCollection.Entry}），
+     * 一旦塞进脏数据，会顺着 {@link #snapshot()} → 上报后端 → 渲染查找 一路传下去。
      */
     public synchronized void wear(String categoryKey, String cosmeticId) {
-        if (categoryKey == null || categoryKey.isBlank() || cosmeticId == null || cosmeticId.isBlank()) {
+        String slot = normalizeSlot(categoryKey);
+        String id = normalizeCosmeticId(cosmeticId);
+        if (slot.isEmpty() || id.isEmpty()) {
             return;
         }
-        worn.put(categoryKey.trim().toLowerCase(Locale.ROOT), cosmeticId.trim());
+        worn.put(slot, id);
         LoadoutStore.requestSave();
+    }
+
+    /** 槽位 key 长度上限：后端 {@code slot} 字段就是分类 key（最长 {@code "other"}）。 */
+    static final int MAX_SLOT_LENGTH = 32;
+    /** 时装 ID 长度上限：{@code packId:localId}，两者各自都有更严格的来源校验，这里只是兜底。 */
+    static final int MAX_ID_LENGTH = 200;
+
+    /**
+     * 规范化槽位 key：trim + 小写；空 / 超长 / 含控制字符返回空串。
+     *
+     * <p>不做"未知分类 → other"的映射：后端可能先于客户端支持新分类，
+     * 强行改成 {@code other} 会把玩家的槽位写错。
+     */
+    static String normalizeSlot(String categoryKey) {
+        if (categoryKey == null) {
+            return "";
+        }
+        String slot = categoryKey.trim().toLowerCase(Locale.ROOT);
+        if (slot.isEmpty() || slot.length() > MAX_SLOT_LENGTH || hasControlChar(slot)) {
+            return "";
+        }
+        return slot;
+    }
+
+    /** 规范化时装 ID：trim；空 / 超长 / 含控制字符返回空串。 */
+    static String normalizeCosmeticId(String cosmeticId) {
+        if (cosmeticId == null) {
+            return "";
+        }
+        String id = cosmeticId.trim();
+        if (id.isEmpty() || id.length() > MAX_ID_LENGTH || hasControlChar(id)) {
+            return "";
+        }
+        return id;
+    }
+
+    /** 是否含 ASCII 控制字符（换行 / NUL 等）：它们会把日志、聊天栏和 JSON 都搅乱。 */
+    private static boolean hasControlChar(String value) {
+        for (int i = 0; i < value.length(); i++) {
+            char c = value.charAt(i);
+            if (c < 0x20 || c == 0x7f) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public synchronized String unwear(String categoryKey) {

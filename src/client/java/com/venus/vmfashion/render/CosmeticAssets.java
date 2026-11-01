@@ -2,6 +2,7 @@ package com.venus.vmfashion.render;
 
 import com.geckolib.cache.model.BakedGeoModel;
 import com.geckolib.cache.model.GeoBone;
+import com.geckolib.cache.model.GeoQuad;
 import com.geckolib.cache.model.cuboid.CuboidGeoBone;
 import com.geckolib.loading.loader.GeckoLibGsonLoader;
 import com.google.gson.JsonElement;
@@ -136,17 +137,22 @@ public final class CosmeticAssets {
         com.venus.vmfashion.render.anim.AnimationCache.invalidate();
         // 只释放本模组注册的动态贴图；原版/其它模组的贴图不在这个集合里
         if (!REGISTERED_TEXTURES.isEmpty()) {
+            java.util.Set<Identifier> released = new java.util.HashSet<>();
             try {
                 TextureManager textureManager = Minecraft.getInstance().getTextureManager();
                 if (textureManager != null) {
                     for (Identifier id : REGISTERED_TEXTURES) {
                         textureManager.release(id);
+                        released.add(id);
                     }
                 }
             } catch (Throwable t) {
                 VMFashionClient.LOGGER.warn("释放时装贴图失败: {}", t.toString());
             } finally {
-                REGISTERED_TEXTURES.clear();
+                // 只移除**真正释放过**的 ID：没释放的留在集合里，下次 registerTexture 会先 release
+                // 再重新注册。旧写法无条件 clear()，于是"没释放成功"的贴图既不在集合里（以后再也不会
+                // 被释放）、又仍然挂在 TextureManager 上，等于永久泄漏一张贴图。
+                REGISTERED_TEXTURES.removeAll(released);
             }
         }
     }
@@ -249,14 +255,24 @@ public final class CosmeticAssets {
             try (InputStream stream = Files.newInputStream(file)) {
                 image = NativeImage.read(stream);
             }
-            TextureManager textureManager = Minecraft.getInstance().getTextureManager();
-            if (textureManager.getTexture(id) != null) {
-                // 上一次加载留下的同名贴图（例如 invalidate 时没拿到 TextureManager），先释放避免显存泄漏
-                textureManager.release(id);
+            boolean registered = false;
+            try {
+                TextureManager textureManager = Minecraft.getInstance().getTextureManager();
+                if (textureManager.getTexture(id) != null) {
+                    // 上一次加载留下的同名贴图（例如 invalidate 时没拿到 TextureManager），先释放避免显存泄漏
+                    textureManager.release(id);
+                }
+                // DynamicTexture 接管 image 的所有权，并在构造时上传到 GPU
+                textureManager.register(id, new DynamicTexture(
+                        () -> "vmfashion/" + definition.id() + "/" + suffix, image));
+                registered = true;
+            } finally {
+                if (!registered) {
+                    // 注册失败（GL 上下文丢失 / TextureManager 为 null）时必须自己关掉 NativeImage：
+                    // 它持有一块堆外内存，GC 管不到，漏一次就是一张贴图大小的原生内存
+                    image.close();
+                }
             }
-            // DynamicTexture 接管 image 的所有权，并在构造时上传到 GPU
-            textureManager.register(id, new DynamicTexture(
-                    () -> "vmfashion/" + definition.id() + "/" + suffix, image));
             REGISTERED_TEXTURES.add(id);
             return id;
         }
@@ -283,11 +299,22 @@ public final class CosmeticAssets {
     }
 
     private static int countQuads(GeoBone[] bones) {
+        if (bones == null) {
+            // 防御式：GeckoLib 对"没有骨骼的模型"可能返回 null 数组，这里不该 NPE
+            return 0;
+        }
         int total = 0;
         for (GeoBone bone : bones) {
-            if (bone instanceof CuboidGeoBone cuboid) {
+            if (bone == null) {
+                continue;
+            }
+            if (bone instanceof CuboidGeoBone cuboid && cuboid.cubes != null) {
                 for (var cube : cuboid.cubes) {
-                    total += cube.quads().length;
+                    if (cube == null) {
+                        continue;
+                    }
+                    GeoQuad[] quads = cube.quads();
+                    total += quads == null ? 0 : quads.length;
                 }
             }
             total += countQuads(bone.children());

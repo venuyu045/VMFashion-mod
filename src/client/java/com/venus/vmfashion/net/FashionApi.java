@@ -127,7 +127,7 @@ public final class FashionApi {
     /**
      * 我的衣柜收藏（网站「我的衣柜」里收藏的时装清单）。
      *
-     * <p>契约见 {@code docs/fashion-api.md} §5.5（mod token 与网页 JWT 都接受）：
+     * <p>契约见 {@code docs/fashion-api.md} §3.5（mod token 与网页 JWT 都接受）：
      * <pre>
      * GET /api/fashion/wardrobe/me
      * { "linked": true,
@@ -138,7 +138,9 @@ public final class FashionApi {
      * <p>字段语义：
      * <ul>
      *   <li>{@code linked=false}：这个 MC 身份还没绑定网站账号（此时 {@code items} 恒为空）；</li>
-     *   <li>{@code missing=true}：该时装本地还没装包 —— mod 侧照样要列出来，穿上时再触发下发；</li>
+     *   <li>{@code missing=true}：这件时装在网站<b>目录里已删除 / 已停用</b>（不是"本地没装包"）——
+     *       界面要显示但<b>禁止穿戴 / 禁止触发下发</b>，否则后端一定拒绝，玩家只会看到一条
+     *       "穿上失败"。本地装没装包由客户端自己比对 {@code CosmeticRegistry} 得出，与服务端字段无关；</li>
      *   <li>条目顺序 = 网站衣柜里的顺序，界面按原序展示。</li>
      * </ul>
      *

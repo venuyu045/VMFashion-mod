@@ -3,12 +3,13 @@ package com.venus.vmfashion.gui.component;
 import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.config.ModConfig;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.Font;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 import net.minecraft.network.chat.Component;
 
 import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 /**
  * Toast 通知组件 - 显示操作反馈
@@ -21,12 +22,27 @@ import java.util.List;
  */
 public class ToastWidget {
 
-    private static final List<Toast> toasts = new ArrayList<>();
+    /**
+     * 正在显示的 Toast。
+     *
+     * <p>用 {@link CopyOnWriteArrayList} 而不是 {@code ArrayList}：Toast 可能从任意线程投递
+     * （同步层的回调线程也会弹提示），而这里是渲染线程每帧遍历 —— 普通 ArrayList 在
+     * "遍历时另一个线程 add" 会抛 {@link java.util.ConcurrentModificationException}，
+     * 那是在渲染回调里，等于客户端崩溃。写入极少（一次点击一条），COW 的复制成本可以忽略。
+     */
+    private static final List<Toast> toasts = new CopyOnWriteArrayList<>();
+    private static final int MAX_TOASTS = 5;
     private static final int TOAST_WIDTH = 200;
     private static final int TOAST_HEIGHT = 30;
     private static final int TOAST_MARGIN = 10;
     private static final long TOAST_DURATION = 3000; // 3秒
     private static final int FADE_DURATION = 500; // 淡入淡出时间
+    /** Toast 面板的最大宽度（窄窗口下会被再夹一次，不能超出屏幕）。 */
+    private static final int MAX_TOAST_WIDTH = 350;
+    /** 留给图标 + 左右边距的宽度。 */
+    private static final int TEXT_INSET = 50;
+    /** 文字最大宽度（超过就换行）。 */
+    private static final int MAX_TEXT_WIDTH = MAX_TOAST_WIDTH - TEXT_INSET;
 
     /**
      * 显示成功提示
@@ -83,8 +99,8 @@ public class ToastWidget {
         Toast toast = new Toast(message, type, System.currentTimeMillis());
         toasts.add(toast);
 
-        // 限制最大数量
-        if (toasts.size() > 5) {
+        // 限制最大数量（多线程投递时可能同时进来，用 while 收敛）
+        while (toasts.size() > MAX_TOASTS) {
             toasts.remove(0);
         }
     }
@@ -130,16 +146,20 @@ public class ToastWidget {
         if (client.font == null) return;
 
         long currentTime = System.currentTimeMillis();
-        Iterator<Toast> iterator = toasts.iterator();
+        List<Toast> expired = null;
         int yOffset = 0;
 
-        while (iterator.hasNext()) {
-            Toast toast = iterator.next();
+        // 遍历的是 COW 快照：这里 remove 不能走 iterator（COW 的迭代器不支持），
+        // 过期项先收集、循环结束后一次性摘掉（removeAll 也是 COW 的原子操作）。
+        for (Toast toast : toasts) {
             long age = currentTime - toast.createdAt;
 
             // 检查是否过期
             if (age > TOAST_DURATION) {
-                iterator.remove();
+                if (expired == null) {
+                    expired = new ArrayList<>(2);
+                }
+                expired.add(toast);
                 continue;
             }
 
@@ -153,46 +173,22 @@ public class ToastWidget {
                 alpha = 1.0f;
             }
 
-            // 计算自适应宽度（限制最大宽度，超出则换行）
-            String icon = toast.type.getIcon();
-            int maxToastWidth = 350;
-            int maxTextWidth = maxToastWidth - 50; // 留给图标和边距
-            // 换行 / 宽度都按"当前语言下的纯文本"算，渲染时也用纯文本，避免每行都要重新排版 Component
-            String plain = toast.plain();
-            int textWidth = client.font.width(plain);
-
-            // 拆分为多行
-            java.util.List<String> lines = new java.util.ArrayList<>();
-            if (textWidth <= maxTextWidth) {
-                lines.add(plain);
-            } else {
-                // 按最大宽度拆行
-                String remaining = plain;
-                while (!remaining.isEmpty()) {
-                    int fitLen = 0;
-                    for (int i = 1; i <= remaining.length(); i++) {
-                        if (client.font.width(remaining.substring(0, i)) > maxTextWidth) {
-                            fitLen = i - 1;
-                            break;
-                        }
-                        fitLen = i;
-                    }
-                    if (fitLen <= 0) fitLen = 1;
-                    lines.add(remaining.substring(0, fitLen));
-                    remaining = remaining.substring(fitLen);
-                }
-            }
+            // 换行结果按 Toast 缓存（每条只算一次）：旧实现每帧都重新 O(n²) 量宽度 + 切字符串
+            List<String> lines = toast.lines(client.font);
 
             // 计算实际宽度
             int actualTextWidth = 0;
             for (String line : lines) {
                 actualTextWidth = Math.max(actualTextWidth, client.font.width(line));
             }
-            int toastWidth = Math.min(maxToastWidth, Math.max(150, actualTextWidth + 50));
+            // 面板宽度不能超出屏幕：窄窗口（GUI 缩放很大）下 old 代码 x 会变成负数，整条 Toast 跑到屏幕外
+            int toastWidth = Math.min(Math.min(MAX_TOAST_WIDTH, screenWidth - 2 * TOAST_MARGIN),
+                    Math.max(150, actualTextWidth + TEXT_INSET));
+            toastWidth = Math.max(1, toastWidth);
             int toastHeight = lines.size() * 12 + 12; // 每行12px + 上下padding
 
             // 计算位置（右上角）
-            int x = screenWidth - toastWidth - TOAST_MARGIN;
+            int x = Math.max(TOAST_MARGIN, screenWidth - toastWidth - TOAST_MARGIN);
             int y = TOAST_MARGIN + yOffset;
 
             // 渲染背景
@@ -206,8 +202,8 @@ public class ToastWidget {
             context.fill(x, y, x + 1, y + toastHeight, borderColor);
             context.fill(x + toastWidth - 1, y, x + toastWidth, y + toastHeight, borderColor);
 
-            // 渲染图标（第一行旁边）
-            context.text(client.font, icon, x + 8, y + 6, 0xFFFFFFFF);
+            // 渲染图标（第一行旁边）；图标也跟着淡入淡出，否则文字透明了图标还是实心
+            context.text(client.font, toast.type.getIcon(), x + 8, y + 6, toast.type.getTextColor(alpha));
 
             // 渲染文字（多行）
             int textColor = toast.type.getTextColor(alpha);
@@ -216,6 +212,9 @@ public class ToastWidget {
             }
 
             yOffset += toastHeight + TOAST_MARGIN;
+        }
+        if (expired != null) {
+            toasts.removeAll(expired);
         }
     }
 
@@ -271,6 +270,8 @@ public class ToastWidget {
         final long createdAt;
         /** 纯文本缓存：同一条 Toast 每帧都要量宽度，避免反复解析 Component。 */
         private String plain;
+        /** 换行结果缓存：按字体宽度算一次，之后每帧复用（旧实现每帧 O(n²) 重算 + 分配）。 */
+        private List<String> lines;
 
         Toast(Component message, ToastType type, long createdAt) {
             this.message = message;
@@ -285,6 +286,32 @@ public class ToastWidget {
                 plain = cached;
             }
             return cached;
+        }
+
+        /** 按 {@link ToastWidget#MAX_TEXT_WIDTH} 把纯文本切成若干行（结果缓存）。 */
+        List<String> lines(Font font) {
+            List<String> cached = lines;
+            if (cached != null) {
+                return cached;
+            }
+            String text = plain();
+            List<String> built = new ArrayList<>(2);
+            if (font.width(text) <= MAX_TEXT_WIDTH) {
+                built.add(text);
+            } else {
+                int start = 0;
+                while (start < text.length()) {
+                    // plainSubstrByWidth 返回"放得下的最长前缀"，一次调用就是一行（旧实现逐字符试宽度）
+                    int fit = font.plainSubstrByWidth(text.substring(start), MAX_TEXT_WIDTH).length();
+                    if (fit <= 0) {
+                        fit = 1; // 极端字体下一个字符都放不下：至少前进一格，避免死循环
+                    }
+                    built.add(text.substring(start, start + fit));
+                    start += fit;
+                }
+            }
+            this.lines = built;
+            return built;
         }
     }
 }

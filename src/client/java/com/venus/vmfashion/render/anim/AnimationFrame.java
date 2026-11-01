@@ -165,7 +165,12 @@ public final class AnimationFrame {
     /** 把模型里的骨骼按名字（小写）建索引。 */
     private static Map<String, GeoBone> indexBones(BakedGeoModel model) {
         Map<String, GeoBone> index = new HashMap<>(32);
-        for (GeoBone bone : model.topLevelBones()) {
+        GeoBone[] roots = model.topLevelBones();
+        if (roots == null) {
+            // 防御式：没有骨骼的模型不该在"建动画状态"这一步 NPE
+            return index;
+        }
+        for (GeoBone bone : roots) {
             indexBone(bone, index);
         }
         return index;
@@ -179,7 +184,11 @@ public final class AnimationFrame {
         if (name != null) {
             index.putIfAbsent(name.toLowerCase(Locale.ROOT), bone);
         }
-        for (GeoBone child : bone.children()) {
+        GeoBone[] children = bone.children();
+        if (children == null) {
+            return;
+        }
+        for (GeoBone child : children) {
             indexBone(child, index);
         }
     }

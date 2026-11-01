@@ -52,6 +52,20 @@ public final class EmissiveMask {
      */
     private static final int ALPHA_THRESHOLD = 8;
 
+    /**
+     * 单张 emissive 贴图允许的最大像素数（2048×2048）。
+     *
+     * <p>遮罩构建在<strong>渲染线程</strong>上同步做：读 PNG → 逐像素建 {@code boolean[]} →
+     * 每个 quad 扫 UV 包围盒。一张 4096×4096 的 emissive 就是 16M 次 {@code getPixel} +
+     * 16MB 的布尔数组，一件"合法但灾难性"的时装包足以卡住一整帧甚至打爆堆；
+     * 而 2048² 已经远大于正常时装（官方包是 256²）。超限就当作"没有 emissive"（不发光），
+     * 保证最坏情况也只是少一层发光，不会卡死客户端。
+     */
+    static final int MAX_PIXELS = 2048 * 2048;
+
+    /** 已经为"贴图过大"告警过的时装 ID（避免每件时装每次 reload 都刷一条）。 */
+    private static final Set<String> OVERSIZED_WARNED = ConcurrentHashMap.newKeySet();
+
     /** 渲染线程独占的缓存：时装 ID → 遮罩。 */
     private static final Map<String, Cached> CACHE = new ConcurrentHashMap<>();
 
@@ -113,6 +127,14 @@ public final class EmissiveMask {
             if (width <= 0 || height <= 0) {
                 return EMPTY;
             }
+            if ((long) width * height > MAX_PIXELS) {
+                // 见 MAX_PIXELS 注释：宁可这一件不发光，也不要在渲染线程上做几千万次像素读
+                if (OVERSIZED_WARNED.add(cosmeticId)) {
+                    VMFashionClient.LOGGER.warn("时装 {} 的 emissive 贴图过大（{}×{}，上限 {} 像素），"
+                            + "本次不做发光遮罩（不发光）", cosmeticId, width, height, MAX_PIXELS);
+                }
+                return EMPTY;
+            }
             boolean[] opaque = new boolean[width * height];
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
@@ -167,9 +189,19 @@ public final class EmissiveMask {
     }
 
     private static void collect(GeoBone[] bones, boolean[] opaque, int width, int height, Set<GeoQuad> out) {
+        if (bones == null) {
+            // 防御式：没有骨骼 / GeckoLib 返回 null 数组时不该 NPE（调用方是渲染线程）
+            return;
+        }
         for (GeoBone bone : bones) {
-            if (bone instanceof CuboidGeoBone cuboid) {
+            if (bone == null) {
+                continue;
+            }
+            if (bone instanceof CuboidGeoBone cuboid && cuboid.cubes != null) {
                 for (var cube : cuboid.cubes) {
+                    if (cube == null) {
+                        continue;
+                    }
                     GeoQuad[] quads = cube.quads();
                     if (quads == null) {
                         continue;
