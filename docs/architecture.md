@@ -38,7 +38,8 @@ com.venus.vmfashion
 │   ├── CosmeticRegistry       全局时装表（find 支持全名 / 唯一短名）
 │   ├── CosmeticResourceId     ID → 资源路径（可读部分 + CRC32，避免撞车）
 │   ├── LocalLoadout           本地玩家的穿戴（分类 → 时装 ID，内存）
-│   └── LoadoutStore           loadout.json 原子写 + debounce
+│   ├── LoadoutStore           loadout.json 原子写 + debounce
+│   └── WardrobeCollection     网站「我的衣柜」收藏的本地镜像（wardrobe.json，v1.3.0）
 ├── render/                    ★ 渲染层
 │   ├── CosmeticAssets         磁盘 .geo.json → BakedGeoModel；PNG → DynamicTexture
 │   ├── CosmeticRenderDispatcher 每帧入口：查穿戴 → 坐标换算 → 提交几何
@@ -89,13 +90,14 @@ com.venus.vmfashion
 2. DefaultPackInstaller.installIfMissing() 释放/更新内置官方包到 packs/official/，并清掉旧版释放的 packs/example/
 3. PackLoader.reload()                    扫 packs/ + packs/server/，刷新 CosmeticRegistry
 4. LoadoutStore.loadInto(LocalLoadout)    读 loadout.json（重启不丢穿戴）
-5. CosmeticAssets.invalidate()            清上一轮的模型/贴图缓存（此时还没有内容）
-6. SyncService.initialize(config)         纯本地模式 → LocalOnlyProvider；配了后端 → HTTP 全套
-7. AssetSyncService.initialize(config)    资产下发服务（未配置/关闭时整体空转）
-8. 事件注册：JOIN/DISCONNECT、每 tick、命令、快捷键、F3+T 重载、CLIENT_STOPPING
+5. WardrobeCollection.loadFromDisk()      读 wardrobe.json（网站衣柜收藏缓存；进服认证后会再拉最新）
+6. CosmeticAssets.invalidate()            清上一轮的模型/贴图缓存（此时还没有内容）
+7. SyncService.initialize(config)         纯本地模式 → LocalOnlyProvider；配了后端 → HTTP 全套
+8. AssetSyncService.initialize(config)    资产下发服务（未配置/关闭时整体空转）
+9. 事件注册：JOIN/DISCONNECT、每 tick、命令、快捷键、F3+T 重载、CLIENT_STOPPING
 ```
 
-退出时 `saveAll()`：`config.save()` + `LoadoutStore.saveNow()`。
+退出时 `saveAll()`：`config.save()` + `LoadoutStore.saveNow()`（衣柜收藏在每次拉取成功时已经原子落盘，退出不用再写）。
 
 > 顺序很重要：**先加载包，再读穿戴** —— 否则 `LocalLoadout` 里存的 ID 在注册表里还查不到。
 

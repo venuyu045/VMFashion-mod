@@ -3,7 +3,7 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.2.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-1.3.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
@@ -21,6 +21,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | 能力 | 说明 |
 |---|---|
 | **可视化衣柜** | 默认按 `K` 打开（也可 `/vmfashion open`）：分类 tab、贴图缩略图网格、搜索、试穿/脱下、实时状态 |
+| **衣柜只显示你的收藏** | 游戏内衣柜 = 网站「我的衣柜」里你主动「加入衣柜」的时装（v1.3.0 起）；收藏里本地没装包的也会列出来（「未下载」角标），点穿上自动下发时装包；未绑定网站账号时自动退回显示本地全部并在底部说明原因 |
 | **Bedrock 模型** | `model.geo.json` 由 GeckoLib 直接烘焙，Blockbench 里怎么摆游戏里就怎么显示（脚底原点 / Y 向上 / 1/16 格） |
 | **挂载骨骼** | `attachedBone` 支持 `body` / `head` / 左右手臂 / 左右腿，跟着部位一起动 |
 | **骨骼动画** | `anim.json`（Bedrock 动画）按关键帧循环播放；每（玩家 × 时装）独立相位，多人同屏互不干扰；一件时装多个动画时用 `animationName` 选播 |
@@ -39,7 +40,7 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.2.1.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.3.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
@@ -114,6 +115,8 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 | `/vmfashion cache clear` | 清空服务端下发的时装包缓存 |
 | `/vmfashion login` | 手动登录时装后端（换账号 / token 过期时） |
 | `/vmfashion sync` | 手动把当前穿戴推送到后端 |
+| `/vmfashion wardrobe` | 查看网站衣柜收藏状态：绑定情况 / 收藏件数 / 上次刷新时间 / 当前是否按收藏过滤 |
+| `/vmfashion wardrobe refresh` | 立即重新拉取网站衣柜收藏（成功/失败都会在聊天栏提示） |
 | `/vmfashion bind` | 绑定到网站：聊天栏显示 6 位绑定码，到站点「时装绑定」页输入（10 分钟内有效） |
 
 `<id>` 可以是完整的 `packId:localId`，也可以是唯一的 `localId`。

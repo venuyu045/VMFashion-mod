@@ -1,6 +1,7 @@
 package com.venus.vmfashion.cosmetic;
 
 import java.util.LinkedHashMap;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -30,6 +31,23 @@ public final class LocalLoadout {
     public synchronized void wear(CosmeticDefinition cosmetic) {
         worn.put(cosmetic.category().key(), cosmetic.id());
         // 纯本地模式下没有云端兜底，改完立刻请求落盘（LoadoutStore 内部 debounce，连续换装只写一次）
+        LoadoutStore.requestSave();
+    }
+
+    /**
+     * 按分类 key + 时装 ID 穿戴（用于"本地没装包、但网站衣柜里有"的时装）。
+     *
+     * <p>没有 {@link CosmeticDefinition} 也要能穿：网站衣柜里的收藏可能是本地还没下载的时装包，
+     * 先把 ID 记进穿戴表（渲染层找不到定义就什么都不画，等包下发完重新扫描后自动生效），
+     * 再触发时装包下载（调用方负责）。
+     *
+     * <p>参数为空 / 空白时直接忽略：宁可什么都不做，也不要往穿戴表里塞脏 key。
+     */
+    public synchronized void wear(String categoryKey, String cosmeticId) {
+        if (categoryKey == null || categoryKey.isBlank() || cosmeticId == null || cosmeticId.isBlank()) {
+            return;
+        }
+        worn.put(categoryKey.trim().toLowerCase(Locale.ROOT), cosmeticId.trim());
         LoadoutStore.requestSave();
     }
 

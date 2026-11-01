@@ -98,6 +98,15 @@ public class ModConfig {
     // 其他玩家穿戴的定时刷新间隔（秒），<= 0 关闭；用于"别人换装后不用重进游戏"
     private int refreshIntervalSeconds = 45;
 
+    /**
+     * 衣柜是否只显示网站衣柜里收藏的时装（默认开）。
+     *
+     * <p>开启后游戏内衣柜只列出玩家在网站「时装商店 → 加入衣柜」的时装；关掉就退回旧行为
+     * （列出本地已装的全部时装）。未绑定网站账号 / 后端不可达时也会自动退回旧行为，
+     * 所以这个开关只是给"我就想看到本地全部"的玩家一个显式出口。
+     */
+    private boolean wardrobeFilterEnabled = true;
+
     // ==================== 资产下发配置 ====================
 
     // 是否自动下载服务端下发的时装包（关闭后只渲染本地已装的包）
@@ -289,6 +298,21 @@ public class ModConfig {
 
     public void setRefreshIntervalSeconds(int refreshIntervalSeconds) {
         this.refreshIntervalSeconds = Math.max(0, Math.min(3600, refreshIntervalSeconds));
+    }
+
+    /**
+     * 衣柜是否只显示网站衣柜里收藏的时装。
+     *
+     * <p>默认 {@code true}：游戏内衣柜 = 网站「我的衣柜」的收藏列表。
+     * 未绑定网站账号 / 后端不可达 / 关闭同步时，界面会自动退回"本地全部"，
+     * 所以这个开关不会让玩家"衣柜突然空了"。
+     */
+    public boolean isWardrobeFilterEnabled() {
+        return wardrobeFilterEnabled;
+    }
+
+    public void setWardrobeFilterEnabled(boolean wardrobeFilterEnabled) {
+        this.wardrobeFilterEnabled = wardrobeFilterEnabled;
     }
 
     // ==================== 资产下发配置 ====================

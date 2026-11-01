@@ -4,8 +4,10 @@ import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.config.ModConfig;
 import com.venus.vmfashion.cosmetic.CosmeticCategory;
 import com.venus.vmfashion.cosmetic.CosmeticDefinition;
+import com.venus.vmfashion.cosmetic.CosmeticPack;
 import com.venus.vmfashion.cosmetic.CosmeticRegistry;
 import com.venus.vmfashion.cosmetic.LocalLoadout;
+import com.venus.vmfashion.cosmetic.WardrobeCollection;
 import com.venus.vmfashion.gui.component.SearchField;
 import com.venus.vmfashion.gui.component.ToastWidget;
 import com.venus.vmfashion.render.CosmeticAssets;
@@ -43,6 +45,17 @@ import java.util.function.Supplier;
  *       和 {@code /vmfashion equip} 完全同一条路径（命令与界面不会出现两套状态）。</li>
  * </ul>
  *
+ * <p><b>数据来源（网站衣柜收藏）</b>：列表不再直接等于"本地装了哪些包"，而是网站
+ * 「我的衣柜」里的收藏（{@link WardrobeCollection}，由同步层拉取）：
+ * <ul>
+ *   <li>收藏里本地<b>没装包</b>的时装也会列出来（名字 / 分类来自服务端），卡片显示「未下载」，
+ *       点它就直接穿上并自动触发时装包下发；</li>
+ *   <li>未绑定网站账号 / 收藏还没加载 / 配置里关了「只显示衣柜收藏」→ 退回"本地全部"，
+ *       并在底部状态行说明原因（绝不让玩家面对一个莫名其妙的空衣柜）；</li>
+ *   <li>打开界面时顺手做一次"过期就刷新"（{@link SyncService#refreshWardrobeIfStale(long)}），
+ *       异步执行、异常吞掉 —— 同步层挂了不能连累界面。</li>
+ * </ul>
+ *
  * <p>配色 / 内边距 / 按钮高度取 {@code config/ModConfig.UI} 常量，整体缩放取
  * {@code ModConfig#getUiScale()}，打开动画时长取 {@code ModConfig#getAnimationDuration()}
  * （0 表示不做动画）。这三个配置项之前是全仓库 0 引用的死字段（路线图 §10 #2）。
@@ -68,7 +81,14 @@ public final class WardrobeScreen extends Screen {
     /** 面板基准高度（两倍单栏面板高度减去头部/底部的富余量）。 */
     private static final int BASE_HEIGHT = ModConfig.UI.PANEL_HEIGHT * 2 - 60;
     private static final int BASE_HEADER_HEIGHT = 26;
-    private static final int BASE_FOOTER_HEIGHT = 24;
+    /**
+     * 底部状态行高度。
+     *
+     * <p>三行：同步状态 / 资产下发状态 / <b>衣柜数据来源</b>（收藏 N 件、未绑定、未加载、开关关闭）。
+     * 来源说明是这次「衣柜只显示网站收藏」改动里最容易被玩家问"我东西去哪了"的地方，
+     * 所以单独占一行常驻，而不是塞进 Tooltip。
+     */
+    private static final int BASE_FOOTER_HEIGHT = 34;
     private static final int BASE_TAB_WIDTH = 74;
     private static final int BASE_TAB_HEIGHT = 18;
     private static final int BASE_PREVIEW_WIDTH = 150;
@@ -130,6 +150,20 @@ public final class WardrobeScreen extends Screen {
     private static final String PENDING_MARK = "…";
     /** 卡片角标：加载失败。 */
     private static final String FAILED_MARK = "!";
+    /**
+     * 卡片角标：收藏里有、本地没装包（文案走语言文件 {@value}，中英双语）。
+     *
+     * <p>和 {@link #PENDING_MARK}/{@link #FAILED_MARK} 是同一套角标机制：画在卡片左上角，
+     * 只是这两个是单字符、这个是短词（"未下载"），所以宽度要截断。
+     */
+    private static final String NOT_INSTALLED_MARK = "vmfashion.gui.card.not_installed";
+    /** 卡片角标：未下载 + 正在下载中（包已入队）。 */
+    private static final String DOWNLOADING_MARK = "vmfashion.gui.card.downloading";
+    /** 角标底色（压在半透明缩略图上，保证文字可读）。 */
+    private static final int BADGE_BG_COLOR = 0xCC000000;
+
+    /** 打开衣柜时，"收藏多久没刷新才重新拉一次"（毫秒）。 */
+    private static final long WARDROBE_REFRESH_INTERVAL_MS = 60_000L;
 
     /** 左侧分类 tab（"全部"的 category 为 {@code null}）。 */
     private final List<TabEntry> tabs = new ArrayList<>();
@@ -141,15 +175,35 @@ public final class WardrobeScreen extends Screen {
 
     /** 当前分类（{@code null} = 全部）。 */
     private CosmeticCategory selectedCategory;
-    /** 右侧预览中的时装。 */
-    private CosmeticDefinition selected;
+    /** 右侧预览中的条目（{@code definition == null} 表示本地没装包）。 */
+    private WardrobeEntry selected;
     /** 搜索关键词（已转小写）。 */
     private String query = "";
     private int scroll;
 
     /** 过滤结果缓存：搜索 / 切分类 / 重载时置脏，避免每帧重扫整个注册表。 */
-    private List<CosmeticDefinition> filtered = List.of();
+    private List<WardrobeEntry> filtered = List.of();
     private boolean filteredDirty = true;
+
+    /**
+     * 上一次构建条目时看到的数据源快照，用来发现"收藏在后台刷新完了"。
+     *
+     * <p>{@link WardrobeCollection#replaceAll} 是网络回调线程写的，界面不会收到通知；
+     * 这里每帧比一下几个 volatile 字段 + 列表引用（都是内存读，零分配），变了才重建。
+     */
+    private List<WardrobeCollection.Entry> sourceEntriesRef;
+    private boolean sourceLinked;
+    private boolean sourceLoaded;
+    private boolean sourceFilterEnabled;
+    /**
+     * 已加载时装包的快照。
+     *
+     * <p>为什么要盯它：未下载的收藏点穿上后会触发时装包下发，装完 {@code PackLoader.reload()}
+     * 会整体替换注册表 —— 界面得跟着把那一件从「未下载」变成正常卡片（不用重开界面）。
+     */
+    private List<CosmeticPack> sourcePacksRef;
+    /** 打开界面时只请求一次"过期就刷新"，窗口 resize 会再走 init，不能每次都拉。 */
+    private boolean wardrobeRefreshRequested;
 
     /** 本帧剩余的烘焙预算。 */
     private int bakeBudget;
@@ -235,7 +289,9 @@ public final class WardrobeScreen extends Screen {
 
         this.padding = Math.max(4, Math.round(ModConfig.UI.PADDING * scale));
         this.headerHeight = Math.max(20, Math.round(BASE_HEADER_HEIGHT * scale));
-        this.footerHeight = Math.max(20, Math.round(BASE_FOOTER_HEIGHT * scale));
+        // 底部固定三行状态文字（行高 LINE_HEIGHT 不随 uiScale 缩放，字体是固定像素），
+        // 所以下限就是基准高度：小缩放时宁可让面板高一点，也不能把第三行画到面板外面
+        this.footerHeight = Math.max(BASE_FOOTER_HEIGHT, Math.round(BASE_FOOTER_HEIGHT * scale));
         this.tabWidth = Math.max(54, Math.round(BASE_TAB_WIDTH * scale));
         this.previewWidth = Math.max(104, Math.round(BASE_PREVIEW_WIDTH * scale));
         this.buttonHeight = Math.max(14, Math.round(ModConfig.UI.BUTTON_HEIGHT * scale));
@@ -266,8 +322,32 @@ public final class WardrobeScreen extends Screen {
         buildTabs(contentLeft, contentTop);
         restoreLastCategory();
         buildWidgets();
-        ensureSelectedValid();
+        // 打开界面时顺手刷新一次收藏（异步、过期才拉、异常吞掉）
+        requestWardrobeRefresh();
+        ensureFiltered();
         refreshButtons();
+    }
+
+    /**
+     * 打开界面时请求一次"收藏过期就刷新"。
+     *
+     * <p>三点要求，缺一不可：
+     * <ul>
+     *   <li><b>异步</b>：{@link SyncService#refreshWardrobeIfStale(long)} 自己丢 worker，界面不等它；</li>
+     *   <li><b>非阻塞</b>：拿到新数据后由 {@link #ensureFiltered()} 的签名比对自动重建，不需要回调；</li>
+     *   <li><b>异常吞掉</b>：同步层是另一个模块（甚至可能是旧版本），它抛什么都不能让衣柜打不开。</li>
+     * </ul>
+     */
+    private void requestWardrobeRefresh() {
+        if (wardrobeRefreshRequested) {
+            return;
+        }
+        wardrobeRefreshRequested = true;
+        try {
+            SyncService.getInstance().refreshWardrobeIfStale(WARDROBE_REFRESH_INTERVAL_MS);
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("刷新衣柜收藏失败（界面继续用当前数据）: {}", t.toString());
+        }
     }
 
     /**
@@ -494,11 +574,11 @@ public final class WardrobeScreen extends Screen {
                 withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
     }
 
-    private void drawCard(GuiGraphicsExtractor context, CosmeticDefinition cosmetic,
+    private void drawCard(GuiGraphicsExtractor context, WardrobeEntry entry,
                           int x, int y, int mouseX, int mouseY, float alpha) {
-        boolean worn = isWorn(cosmetic);
+        boolean worn = isWorn(entry);
         boolean hovered = isInside(mouseX, mouseY, x, y, cardWidth, cardHeight);
-        boolean chosen = cosmetic == this.selected;
+        boolean chosen = entry == this.selected;
 
         int background = (hovered || chosen) ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.PANEL_COLOR;
         context.fill(x, y, x + cardWidth, y + cardHeight, withAlpha(background, alpha));
@@ -506,34 +586,43 @@ public final class WardrobeScreen extends Screen {
                 : (chosen ? ModConfig.UI.ACCENT_COLOR : ModConfig.UI.BORDER_COLOR);
         context.outline(x, y, cardWidth, cardHeight, withAlpha(border, alpha));
 
-        // 缩略图：直接画 CosmeticAssets 注册好的 Identifier
+        // 缩略图：已安装的走 CosmeticAssets 注册好的 Identifier；未安装的没有贴图，只能画占位
         int thumbSize = Math.max(8, cardWidth - 2 * CARD_INNER_PADDING);
         int thumbX = x + CARD_INNER_PADDING;
         int thumbY = y + CARD_INNER_PADDING;
-        Identifier texture = thumbnailFor(cosmetic);
+        Identifier texture = entry.installed() ? thumbnailFor(entry.definition()) : null;
         if (texture != null) {
             // javap 核对：blit(Identifier, int x0, int y0, int x1, int y1, float u0, float v0, float u1, float v1)
             // （u/v 是 0..1 归一化坐标，见 LoomScreen 的调用点；所以不需要贴图尺寸）
             context.blit(texture, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     0.0f, 0.0f, 1.0f, 1.0f);
         } else {
+            // 未安装 / 加载失败 / 本帧预算用完：占位底色 + 分类名（至少能看出这是哪一类）
             context.fill(thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     withAlpha(THUMB_PLACEHOLDER_COLOR, alpha));
-            context.centeredText(this.font, categoryLabel(cosmetic.category()),
+            context.centeredText(this.font, categoryLabel(entry.category()),
                     thumbX + thumbSize / 2,
                     thumbY + (thumbSize - this.font.lineHeight) / 2,
                     withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
         }
 
         // 名称（超出卡片宽度就截断）
-        drawCenteredTruncated(context, cosmetic.name(), x + cardWidth / 2,
+        drawCenteredTruncated(context, entry.name(), x + cardWidth / 2,
                 thumbY + thumbSize + 2, thumbSize, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
 
-        // 状态角标（左上角）：加载失败 "!" / 正在下载 "…"（audit v1.2 N08）
-        if (thumbFailures.containsKey(cosmetic.id())) {
+        // 状态角标（左上角）
+        if (!entry.installed()) {
+            // 收藏里有、本地没装包：优先显示"下载中…"，否则"未下载"（点卡片就会开始下载）
+            boolean downloading = isPackPending(packIdOf(entry));
+            int reserved = worn ? this.font.width(WORN_MARK) + 4 : 0;
+            drawCornerBadge(context,
+                    Component.translatable(downloading ? DOWNLOADING_MARK : NOT_INSTALLED_MARK),
+                    x + 2, y + 2, Math.max(0, cardWidth - 4 - reserved),
+                    downloading ? ModConfig.UI.MUTED_COLOR : ModConfig.UI.ACCENT_COLOR, alpha);
+        } else if (thumbFailures.containsKey(entry.id())) {
             context.text(this.font, FAILED_MARK, x + 3, y + 3,
                     withAlpha(ModConfig.UI.DANGER_COLOR, alpha));
-        } else if (isPackDownloading(cosmetic)) {
+        } else if (isPackPending(packIdOf(entry))) {
             context.text(this.font, PENDING_MARK, x + 3, y + 3,
                     withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
         }
@@ -546,10 +635,38 @@ public final class WardrobeScreen extends Screen {
         }
     }
 
-    /** 这件时装的包是否正在自动下发（"下载中"角标）。别的模块抛异常不能让界面崩。 */
-    private static boolean isPackDownloading(CosmeticDefinition cosmetic) {
+    /** 左上角小角标：带底色的一块短文字（单字符角标仍走 {@code context.text}，不浪费底色）。 */
+    private void drawCornerBadge(GuiGraphicsExtractor context, Component text, int x, int y,
+                                 int maxWidth, int color, float alpha) {
+        if (maxWidth <= 0) {
+            return;
+        }
+        String shown = text.getString();
+        if (this.font.width(shown) > maxWidth) {
+            shown = this.font.plainSubstrByWidth(shown,
+                    Math.max(1, maxWidth - this.font.width("…"))) + "…";
+        }
+        int width = Math.min(maxWidth, this.font.width(shown));
+        context.fill(x, y, x + width + 3, y + this.font.lineHeight,
+                withAlpha(BADGE_BG_COLOR, alpha));
+        context.text(this.font, shown, x + 1, y, withAlpha(color, alpha));
+    }
+
+    /** 条目所属包 ID：服务端没给 packId 时从全局 ID（{@code packId:localId}）里拆。 */
+    private static String packIdOf(WardrobeEntry entry) {
+        String packId = entry.packId();
+        if (packId != null && !packId.isBlank()) {
+            return packId;
+        }
+        String id = entry.id();
+        int colon = id == null ? -1 : id.indexOf(':');
+        return colon > 0 ? id.substring(0, colon) : "";
+    }
+
+    /** 这个包是否正在自动下发（"下载中"角标）。别的模块抛异常不能让界面崩。 */
+    private static boolean isPackPending(String packId) {
         try {
-            return AssetSyncService.getInstance().isPackPending(cosmetic.packId());
+            return AssetSyncService.getInstance().isPackPending(packId);
         } catch (Throwable t) {
             return false;
         }
@@ -564,8 +681,8 @@ public final class WardrobeScreen extends Screen {
         context.outline(left, top, previewWidth, Math.max(0, bottom - top),
                 withAlpha(ModConfig.UI.BORDER_COLOR, alpha));
 
-        CosmeticDefinition cosmetic = this.selected;
-        if (cosmetic == null) {
+        WardrobeEntry entry = this.selected;
+        if (entry == null) {
             context.textWithWordWrap(this.font, Component.translatable("vmfashion.gui.preview.hint"),
                     left + padding, top + padding, Math.max(40, previewWidth - 2 * padding),
                     withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
@@ -575,30 +692,49 @@ public final class WardrobeScreen extends Screen {
         int thumbSize = Math.max(16, Math.min(PREVIEW_THUMB_MAX, previewWidth - 2 * padding));
         int thumbX = left + (previewWidth - thumbSize) / 2;
         int thumbY = top + padding;
-        Identifier texture = thumbnailFor(cosmetic);
+        Identifier texture = entry.installed() ? thumbnailFor(entry.definition()) : null;
         if (texture != null) {
             context.blit(texture, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     0.0f, 0.0f, 1.0f, 1.0f);
         } else {
+            // 未安装（或缩略图失败）：占位图 + 分类名，右侧信息仍然完整
             context.fill(thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     withAlpha(THUMB_PLACEHOLDER_COLOR, alpha));
+            context.centeredText(this.font, categoryLabel(entry.category()),
+                    thumbX + thumbSize / 2, thumbY + (thumbSize - this.font.lineHeight) / 2,
+                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
         }
 
         int textX = left + padding;
         int textWidth = Math.max(40, previewWidth - 2 * padding);
         int y = thumbY + thumbSize + padding;
-        y = drawLabelValue(context, "vmfashion.gui.preview.name", cosmetic.name(),
+        y = drawLabelValue(context, "vmfashion.gui.preview.name", entry.name(),
                 textX, y, textWidth, alpha);
-        y = drawLabelValue(context, "vmfashion.gui.preview.id", cosmetic.id(),
+        y = drawLabelValue(context, "vmfashion.gui.preview.id", entry.id(),
                 textX, y, textWidth, alpha);
         y = drawLabelValue(context, "vmfashion.gui.preview.category",
-                categoryLabel(cosmetic.category()).getString(), textX, y, textWidth, alpha);
-        y = drawLabelValue(context, "vmfashion.gui.preview.bone", cosmetic.attachedBone(),
+                categoryLabel(entry.category()).getString(), textX, y, textWidth, alpha);
+
+        CosmeticDefinition definition = entry.definition();
+        if (definition == null) {
+            // 本地没装包：没有骨骼 / 隐藏部件 / 缩放可显示，改成"所属包" + 一行说明
+            y = drawLabelValue(context, "vmfashion.gui.preview.pack", valueOrDash(packIdOf(entry)),
+                    textX, y, textWidth, alpha);
+            context.textWithWordWrap(this.font,
+                    Component.translatable("vmfashion.gui.preview.not_installed"),
+                    textX, y + 2, textWidth, withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+            return;
+        }
+        y = drawLabelValue(context, "vmfashion.gui.preview.bone", definition.attachedBone(),
                 textX, y, textWidth, alpha);
-        y = drawLabelValue(context, "vmfashion.gui.preview.hide_parts", hidePartsText(cosmetic),
+        y = drawLabelValue(context, "vmfashion.gui.preview.hide_parts", hidePartsText(definition),
                 textX, y, textWidth, alpha);
-        drawLabelValue(context, "vmfashion.gui.preview.scale", String.valueOf(cosmetic.scale()),
+        drawLabelValue(context, "vmfashion.gui.preview.scale", String.valueOf(definition.scale()),
                 textX, y, textWidth, alpha);
+    }
+
+    private static String valueOrDash(String value) {
+        return value == null || value.isBlank() ? EMPTY_VALUE : value;
     }
 
     private void drawFooter(GuiGraphicsExtractor context, float alpha) {
@@ -624,6 +760,35 @@ public final class WardrobeScreen extends Screen {
                 textX, top + 3, maxWidth, withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
         drawTruncated(context, assetsLine.getString(),
                 textX, top + 3 + LINE_HEIGHT, maxWidth, withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+        // 第三行：这份列表到底从哪来的（收藏 N 件 / 未绑定 / 未加载 / 开关关闭）
+        drawTruncated(context, sourceStatusText().getString(),
+                textX, top + 3 + 2 * LINE_HEIGHT, maxWidth,
+                withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+    }
+
+    /**
+     * 底部状态行第三行：当前衣柜列表的数据来源。
+     *
+     * <p>这段文案是这次改动的"解释器"：玩家发现衣柜里的东西变少了 / 变多了，一眼就能看出原因，
+     * 而不是以为模组坏了。四种状态对应 {@link Source}。
+     */
+    private Component sourceStatusText() {
+        return switch (wardrobeSource()) {
+            case FILTERED -> Component.translatable("vmfashion.gui.source.wardrobe",
+                    safeCollectionSize());
+            case UNLINKED -> Component.translatable("vmfashion.gui.source.unlinked");
+            case NOT_LOADED -> Component.translatable("vmfashion.gui.source.not_loaded");
+            case DISABLED -> Component.translatable("vmfashion.gui.source.disabled");
+        };
+    }
+
+    /** 收藏件数；同步层抛异常时按 0 算（界面不能因为别的模块崩）。 */
+    private static int safeCollectionSize() {
+        try {
+            return WardrobeCollection.getInstance().size();
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** 资源加载失败件数（诊断用）；拿不到就按 0，界面不能因此崩。 */
@@ -657,7 +822,6 @@ public final class WardrobeScreen extends Screen {
                     selectedCategory = tab.category();
                     scroll = 0;
                     filteredDirty = true;
-                    ensureSelectedValid();
                     refreshButtons();
                     persistCategory();
                 }
@@ -668,7 +832,13 @@ public final class WardrobeScreen extends Screen {
         if (isInside(mouseX, mouseY, gridX, gridY, gridWidth, gridHeight)) {
             int index = cardIndexAt(mouseX, mouseY);
             if (index >= 0) {
-                this.selected = filtered.get(index);
+                WardrobeEntry entry = filtered.get(index);
+                this.selected = entry;
+                // 收藏里有、本地没装包：点一下就直接穿上（同时触发时装包下发），
+                // 不用先选中再点"穿上" —— 玩家点它的意图就是"我要穿这个"
+                if (!entry.installed() && !isWorn(entry)) {
+                    equipEntry(entry);
+                }
                 refreshButtons();
                 return true;
             }
@@ -720,21 +890,55 @@ public final class WardrobeScreen extends Screen {
     // ==================== 换装（和命令同一条路径） ====================
 
     private void equipSelected() {
-        CosmeticDefinition cosmetic = this.selected;
-        if (cosmetic == null) {
+        equipEntry(this.selected);
+    }
+
+    /**
+     * 穿上一件条目。
+     *
+     * <p>两条路径：
+     * <ul>
+     *   <li><b>已安装</b>：{@link LocalLoadout#wear(CosmeticDefinition)}，和 {@code /vmfashion equip}
+     *       完全一致（本地状态 + 上报后端）；</li>
+     *   <li><b>未安装</b>：{@link LocalLoadout#wear(String, String)} 只记 ID，再请求时装包下发；
+     *       包到了之后注册表刷新，渲染层自然就能画出来（界面里那件会从"未下载"变成正常卡片）。</li>
+     * </ul>
+     */
+    private void equipEntry(WardrobeEntry entry) {
+        if (entry == null) {
             return;
         }
-        LocalLoadout.getInstance().wear(cosmetic);
-        // 与 /vmfashion equip 完全一致：本地状态 + 上报后端
-        SyncService.getInstance().uploadLocalLoadout();
-        // 资源加载失败时不能只说"已穿上"：玩家会以为成功了却什么也看不到（audit v1.2 N08）
-        if (assetReady(cosmetic)) {
-            ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped", cosmetic.name()));
+        CosmeticDefinition definition = entry.definition();
+        if (definition != null) {
+            LocalLoadout.getInstance().wear(definition);
+            // 与 /vmfashion equip 完全一致：本地状态 + 上报后端
+            SyncService.getInstance().uploadLocalLoadout();
+            // 资源加载失败时不能只说"已穿上"：玩家会以为成功了却什么也看不到（audit v1.2 N08）
+            if (assetReady(definition)) {
+                ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped",
+                        entry.name()));
+            } else {
+                ToastWidget.showError(Component.translatable("vmfashion.gui.toast.equip_no_asset",
+                        entry.name()));
+            }
         } else {
-            ToastWidget.showError(Component.translatable("vmfashion.gui.toast.equip_no_asset",
-                    cosmetic.name()));
+            LocalLoadout.getInstance().wear(entry.category().key(), entry.id());
+            // 上报在触发下载之前：就算下载排队很久，网站侧"我穿了什么"也已经是新的
+            SyncService.getInstance().uploadLocalLoadout();
+            requestMissingPack(entry);
+            ToastWidget.showSuccess(Component.translatable("vmfashion.gui.toast.equipped_downloading",
+                    entry.name()));
         }
         refreshButtons();
+    }
+
+    /** 请求下发某件未安装时装的包；参数非法 / 同步层抛异常都不能让界面崩。 */
+    private static void requestMissingPack(WardrobeEntry entry) {
+        try {
+            AssetSyncService.getInstance().requestMissing(entry.id());
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("请求时装包下发失败 {}: {}", entry.id(), t.toString());
+        }
     }
 
     /** 这件时装的模型/贴图是否已经能加载（会触发首次烘焙，和缩略图同一条路径）。 */
@@ -771,12 +975,26 @@ public final class WardrobeScreen extends Screen {
         }
     }
 
-    private static boolean isWorn(CosmeticDefinition cosmetic) {
-        if (cosmetic == null) {
+    /**
+     * 这件条目是不是当前穿着的。
+     *
+     * <p>两个方向都判：服务端收藏里的 ID 可能是不带包名的短 ID（{@code angel}），
+     * 而本地装上包之后条目 ID 会变成全局 ID（{@code lw_angel:angel}）—— 只比一边会出现
+     * "明明穿着却显示没穿"。{@code entry.id()} 与本地定义 ID 任一命中都算穿着。
+     */
+    private static boolean isWorn(WardrobeEntry entry) {
+        if (entry == null) {
             return false;
         }
-        String wornId = LocalLoadout.getInstance().get(cosmetic.category().key());
-        return cosmetic.id().equals(wornId);
+        String wornId = LocalLoadout.getInstance().get(entry.category().key());
+        if (wornId == null) {
+            return false;
+        }
+        if (wornId.equalsIgnoreCase(entry.id())) {
+            return true;
+        }
+        CosmeticDefinition definition = entry.definition();
+        return definition != null && wornId.equalsIgnoreCase(definition.id());
     }
 
     // ==================== 过滤 / 选择 ====================
@@ -787,43 +1005,181 @@ public final class WardrobeScreen extends Screen {
         this.filteredDirty = true;
     }
 
+    /**
+     * 衣柜列表当前的数据来源。
+     *
+     * <p>优先级：配置开关 &gt; 是否加载过 &gt; 是否绑定。先判"加载过"再判"绑定"：
+     * 没加载过时 {@code linked} 一定是 {@code false}，不能把"还没拉到"误报成"未绑定"。
+     */
+    private Source wardrobeSource() {
+        if (!isFilterEnabled()) {
+            return Source.DISABLED;
+        }
+        WardrobeCollection collection = collectionOrNull();
+        if (collection == null || !collection.loaded()) {
+            return Source.NOT_LOADED;
+        }
+        return collection.linked() ? Source.FILTERED : Source.UNLINKED;
+    }
+
+    /** 配置里的「只显示衣柜收藏」开关；读不到配置时按开启处理（默认值就是 {@code true}）。 */
+    private static boolean isFilterEnabled() {
+        ModConfig config = configOrNull();
+        return config == null || config.isWardrobeFilterEnabled();
+    }
+
+    /** 收藏镜像；同步层抛异常时返回 {@code null}（界面退回"本地全部"，绝不崩）。 */
+    private static WardrobeCollection collectionOrNull() {
+        try {
+            return WardrobeCollection.getInstance();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private void ensureFiltered() {
+        markDirtyIfSourceChanged();
         if (!filteredDirty) {
             return;
         }
         filteredDirty = false;
-        List<CosmeticDefinition> result = new ArrayList<>();
-        for (CosmeticDefinition cosmetic : CosmeticRegistry.getInstance().all()) {
-            if (cosmetic == null) {
+        List<WardrobeEntry> all = buildEntries();
+        List<WardrobeEntry> result = new ArrayList<>();
+        for (WardrobeEntry entry : all) {
+            if (entry == null) {
                 continue;
             }
-            if (selectedCategory != null && cosmetic.category() != selectedCategory) {
+            if (selectedCategory != null && entry.category() != selectedCategory) {
                 continue;
             }
-            if (!query.isEmpty() && !matchesQuery(cosmetic)) {
+            if (!query.isEmpty() && !matchesQuery(entry)) {
                 continue;
             }
-            result.add(cosmetic);
+            result.add(entry);
         }
         this.filtered = result;
+        ensureSelectedValid(all);
     }
 
-    private boolean matchesQuery(CosmeticDefinition cosmetic) {
-        String name = cosmetic.name();
+    /**
+     * 数据源（收藏快照 / 绑定状态 / 配置开关 / 已装包）变了就置脏。
+     *
+     * <p>全是内存读，每帧调也不心疼 —— 收藏是网络回调线程整体替换的、注册表是装包线程整体替换的，
+     * 界面都收不到回调，只能靠"快照引用变了"来发现。
+     */
+    private void markDirtyIfSourceChanged() {
+        WardrobeCollection collection = collectionOrNull();
+        List<WardrobeCollection.Entry> entriesRef = collection == null ? null : collection.entries();
+        boolean linked = collection != null && collection.linked();
+        boolean loaded = collection != null && collection.loaded();
+        boolean filterEnabled = isFilterEnabled();
+        List<CosmeticPack> packsRef = loadedPacksOrNull();
+        if (entriesRef != sourceEntriesRef || linked != sourceLinked
+                || loaded != sourceLoaded || filterEnabled != sourceFilterEnabled
+                || packsRef != sourcePacksRef) {
+            sourceEntriesRef = entriesRef;
+            sourceLinked = linked;
+            sourceLoaded = loaded;
+            sourceFilterEnabled = filterEnabled;
+            sourcePacksRef = packsRef;
+            filteredDirty = true;
+        }
+    }
+
+    /** 已加载的包列表快照（重载时整体替换，引用变了 = 注册表变了）；拿不到返回 {@code null}。 */
+    private static List<CosmeticPack> loadedPacksOrNull() {
+        try {
+            return CosmeticRegistry.getInstance().packs();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 未过滤的全部条目：过滤生效时来自网站收藏，否则退回"本地装了哪些包"。 */
+    private List<WardrobeEntry> buildEntries() {
+        if (wardrobeSource() == Source.FILTERED) {
+            return buildWardrobeEntries();
+        }
+        List<WardrobeEntry> result = new ArrayList<>();
+        for (CosmeticDefinition definition : CosmeticRegistry.getInstance().all()) {
+            if (definition == null) {
+                continue;
+            }
+            result.add(new WardrobeEntry(definition.id(), definition.name(),
+                    definition.category(), definition.packId(), definition));
+        }
+        return result;
+    }
+
+    /**
+     * 网站收藏 → 条目。
+     *
+     * <p>本地装了包的用本地定义（缩略图 / 预览 / 穿戴全部走老路径，名字也优先本地名，
+     * 这样多语言时装包的名字才能跟着客户端语言走）；没装包的 {@code definition = null}，
+     * 名字 / 分类全部来自服务端，点穿上会自动触发下载。
+     */
+    private List<WardrobeEntry> buildWardrobeEntries() {
+        WardrobeCollection collection = collectionOrNull();
+        if (collection == null) {
+            return List.of();
+        }
+        CosmeticRegistry registry = CosmeticRegistry.getInstance();
+        List<WardrobeEntry> result = new ArrayList<>();
+        for (WardrobeCollection.Entry entry : collection.entries()) {
+            if (entry == null || entry.cosmeticId() == null || entry.cosmeticId().isBlank()) {
+                continue;
+            }
+            CosmeticDefinition definition = registry.find(entry.cosmeticId());
+            if (definition != null) {
+                String name = definition.name() == null || definition.name().isBlank()
+                        ? serverName(entry)
+                        : definition.name();
+                result.add(new WardrobeEntry(definition.id(), name, definition.category(),
+                        definition.packId(), definition));
+            } else {
+                result.add(new WardrobeEntry(entry.cosmeticId(), serverName(entry),
+                        CosmeticCategory.byKey(entry.categoryKey()),
+                        entry.packId() == null ? "" : entry.packId(), null));
+            }
+        }
+        return result;
+    }
+
+    /** 服务端名字（可能为空串）→ 回落到时装 ID。 */
+    private static String serverName(WardrobeCollection.Entry entry) {
+        String name = entry.name();
+        if (name != null && !name.isBlank()) {
+            return name.trim();
+        }
+        return entry.cosmeticId();
+    }
+
+    private boolean matchesQuery(WardrobeEntry entry) {
+        String name = entry.name();
         if (name != null && name.toLowerCase(Locale.ROOT).contains(query)) {
             return true;
         }
-        return cosmetic.id().toLowerCase(Locale.ROOT).contains(query);
+        return entry.id().toLowerCase(Locale.ROOT).contains(query);
     }
 
-    /** 选中的时装可能因为 {@code /vmfashion reload} 已经不存在了，重开界面时要清掉。 */
-    private void ensureSelectedValid() {
+    /**
+     * 选中的条目失效就清掉 / 换成新对象。
+     *
+     * <p>两种失效：{@code /vmfashion reload} 之后收藏里的时装没了；或者未安装的条目刚下载完，
+     * 条目从 {@code definition == null} 变成有定义 —— 后者要换成本次构建的新对象，
+     * 否则预览面板会一直停在"本地未安装"。
+     */
+    private void ensureSelectedValid(List<WardrobeEntry> all) {
         if (selected == null) {
             return;
         }
-        if (CosmeticRegistry.getInstance().find(selected.id()) == null) {
-            this.selected = null;
+        for (WardrobeEntry entry : all) {
+            if (entry.id().equalsIgnoreCase(selected.id())) {
+                this.selected = entry;
+                return;
+            }
         }
+        this.selected = null;
     }
 
     private int maxScroll() {
@@ -837,11 +1193,19 @@ public final class WardrobeScreen extends Screen {
     }
 
     private Component emptyMessage() {
-        if (CosmeticRegistry.getInstance().size() == 0) {
-            return Component.translatable("vmfashion.gui.empty.no_packs");
+        // 过滤生效但收藏为空：这是"衣柜里还没加东西"，必须引导去网站商店，
+        // 而不是沿用"没装包"的文案（玩家会去翻 config/vmfashion/packs 找不存在的问题）
+        if (wardrobeSource() == Source.FILTERED && safeCollectionSize() == 0) {
+            return Component.translatable("vmfashion.gui.empty.wardrobe_empty");
         }
         if (!query.isEmpty()) {
             return Component.translatable("vmfashion.gui.empty.no_match");
+        }
+        if (selectedCategory != null) {
+            return Component.translatable("vmfashion.gui.empty.no_category");
+        }
+        if (CosmeticRegistry.getInstance().size() == 0) {
+            return Component.translatable("vmfashion.gui.empty.no_packs");
         }
         return Component.translatable("vmfashion.gui.empty.no_category");
     }
@@ -1012,6 +1376,42 @@ public final class WardrobeScreen extends Screen {
         }
     }
 
+
+    /**
+     * 衣柜里的一条。
+     *
+     * <p>{@code definition == null} 表示"网站衣柜里有、本地还没装包"：缩略图 / 预览 / 穿戴
+     * 全部要走分支，绝不能解引用 {@code definition}（这是这次改动最容易崩的地方）。
+     *
+     * @param id         全局 ID（{@code packId:localId}）；未安装时来自服务端收藏
+     * @param name       展示名（已安装优先本地名，未安装用服务端名，空则回落 ID）
+     * @param category   分类（未安装时由服务端 categoryKey 解析，未知按 {@code other}）
+     * @param packId     所属包 ID（未安装时用来判"下载中"角标，可能为空串）
+     * @param definition 本地定义；{@code null} = 本地没装包
+     */
+    private record WardrobeEntry(String id, String name, CosmeticCategory category,
+                                 String packId, CosmeticDefinition definition) {
+        boolean installed() {
+            return definition != null;
+        }
+    }
+
+    /**
+     * 衣柜列表的数据来源，决定底部状态行文案与空状态文案。
+     *
+     * <p>这个枚举存在的意义：让"为什么我的衣柜变了"这件事在界面上自己解释清楚，
+     * 而不是让玩家去猜 / 去翻日志。
+     */
+    private enum Source {
+        /** 已绑定 + 已加载：只显示网站衣柜收藏。 */
+        FILTERED,
+        /** 服务端明确说该身份没绑定网站账号 → 退回本地全部。 */
+        UNLINKED,
+        /** 收藏还没成功加载过（断网 / 纯本地模式）→ 退回本地全部。 */
+        NOT_LOADED,
+        /** 配置里关掉了「只显示衣柜收藏」→ 显示本地全部。 */
+        DISABLED
+    }
 
     /** 左侧分类 tab。{@code category == null} 表示「全部」。 */
     private record TabEntry(CosmeticCategory category, Component label,

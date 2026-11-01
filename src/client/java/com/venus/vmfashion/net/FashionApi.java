@@ -124,6 +124,31 @@ public final class FashionApi {
         return get("/loadout/me", true);
     }
 
+    /**
+     * 我的衣柜收藏（网站「我的衣柜」里收藏的时装清单）。
+     *
+     * <p>契约见 {@code docs/fashion-api.md} §5.5（mod token 与网页 JWT 都接受）：
+     * <pre>
+     * GET /api/fashion/wardrobe/me
+     * { "linked": true,
+     *   "items": [ { "cosmeticId": "lw_angel:angel", "name": "Angel Wings",
+     *                "category": "wings", "packId": "lw_angel", "missing": false } ] }
+     * </pre>
+     *
+     * <p>字段语义：
+     * <ul>
+     *   <li>{@code linked=false}：这个 MC 身份还没绑定网站账号（此时 {@code items} 恒为空）；</li>
+     *   <li>{@code missing=true}：该时装本地还没装包 —— mod 侧照样要列出来，穿上时再触发下发；</li>
+     *   <li>条目顺序 = 网站衣柜里的顺序，界面按原序展示。</li>
+     * </ul>
+     *
+     * <p>解析交给 {@code cosmetic/WardrobeCollection#parse(JsonObject)}（防御式：坏条目单条丢弃，
+     * 不影响整份收藏）。后端没有这个端点时返回 404 —— 调用方（{@code SyncService}）要能容忍。
+     */
+    public CompletableFuture<JsonObject> wardrobeMine() {
+        return get("/wardrobe/me", true);
+    }
+
     /** 全量覆盖我的穿戴配置（没出现的槽位 = 卸下）。 */
     public CompletableFuture<JsonObject> putLoadout(JsonObject items) {
         JsonObject body = new JsonObject();

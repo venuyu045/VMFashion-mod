@@ -4,6 +4,7 @@ import com.venus.vmfashion.command.FashionCommand;
 import com.venus.vmfashion.config.ModConfig;
 import com.venus.vmfashion.cosmetic.LoadoutStore;
 import com.venus.vmfashion.cosmetic.LocalLoadout;
+import com.venus.vmfashion.cosmetic.WardrobeCollection;
 import com.venus.vmfashion.cosmetic.PackLoader;
 import com.venus.vmfashion.gui.KeyBindings;
 import com.venus.vmfashion.render.CosmeticAssets;
@@ -53,6 +54,10 @@ public class VMFashionClient implements ClientModInitializer {
 
         // 本地穿戴持久化：先读磁盘（重启不丢），随后进服时若云端有数据会覆盖它
         LoadoutStore.loadInto(LocalLoadout.getInstance());
+
+        // 网站衣柜收藏的磁盘缓存：先读出来，界面第一次打开就能按收藏过滤；
+        // 进服认证成功后同步层会再拉一次最新的（断网 / 后端挂了时这份缓存就是唯一来源）
+        WardrobeCollection.getInstance().loadFromDisk();
 
         // 同步层：配置了后端地址才启用；否则保持纯本地（provider = LocalOnlyProvider）
         CosmeticAssets.invalidate();

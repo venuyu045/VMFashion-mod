@@ -10,6 +10,7 @@ import com.venus.vmfashion.cosmetic.CosmeticPack;
 import com.venus.vmfashion.cosmetic.CosmeticRegistry;
 import com.venus.vmfashion.cosmetic.LocalLoadout;
 import com.venus.vmfashion.cosmetic.PackLoader;
+import com.venus.vmfashion.cosmetic.WardrobeCollection;
 import com.venus.vmfashion.gui.KeyBindings;
 import com.venus.vmfashion.gui.WardrobeScreen;
 import com.venus.vmfashion.loadout.LoadoutService;
@@ -70,6 +71,11 @@ public final class FashionCommand {
                                 .executes(ctx -> cacheClear(ctx.getSource()))))
                 // 导出诊断信息到 config/vmfashion/diag/
                 .then(ClientCommands.literal("diag").executes(ctx -> diag(ctx.getSource())))
+                // 网站衣柜收藏：/vmfashion wardrobe 看状态，/vmfashion wardrobe refresh 立即重拉
+                .then(ClientCommands.literal("wardrobe")
+                        .executes(ctx -> wardrobeStatus(ctx.getSource()))
+                        .then(ClientCommands.literal("refresh")
+                                .executes(ctx -> wardrobeRefresh(ctx.getSource()))))
                 .then(ClientCommands.literal("equip")
                         .then(ClientCommands.argument("id", StringArgumentType.greedyString())
                                 .executes(ctx -> equip(StringArgumentType.getString(ctx, "id")))))
@@ -190,6 +196,69 @@ public final class FashionCommand {
     private static int open(FabricClientCommandSource source) {
         WardrobeScreen.open();
         source.sendFeedback(feedback("vmfashion.command.open", KeyBindings.keyName()));
+        return 1;
+    }
+
+    /**
+     * 网站衣柜收藏的状态：是否已绑定 / 收藏件数 / 上次刷新时间 / 当前是否按收藏过滤。
+     *
+     * <p>为什么要这条命令：衣柜界面里玩家只能看到"收藏 N 件"或"未绑定"，看不到"多久没刷新了"，
+     * 排查"网站加了衣柜但游戏里没出现"时这行时间是关键信息。
+     */
+    private static int wardrobeStatus(FabricClientCommandSource source) {
+        WardrobeCollection collection = WardrobeCollection.getInstance();
+        source.sendFeedback(feedback("vmfashion.command.wardrobe.header"));
+        source.sendFeedback(feedback(collection.linked()
+                ? "vmfashion.command.wardrobe.linked"
+                : "vmfashion.command.wardrobe.unlinked"));
+        source.sendFeedback(feedback("vmfashion.command.wardrobe.count", collection.size()));
+        source.sendFeedback(wardrobeFetchedLine(collection));
+        source.sendFeedback(wardrobeFilterLine(collection));
+        return 1;
+    }
+
+    /** 上次刷新时间：从未 / 刚刚 / N 分钟前。 */
+    private static Component wardrobeFetchedLine(WardrobeCollection collection) {
+        long fetchedAt = collection.fetchedAtMs();
+        if (fetchedAt <= 0L) {
+            return feedback("vmfashion.command.wardrobe.fetched_never");
+        }
+        long minutes = Math.max(0L, (System.currentTimeMillis() - fetchedAt) / 60_000L);
+        return minutes <= 0L
+                ? feedback("vmfashion.command.wardrobe.fetched_now")
+                : feedback("vmfashion.command.wardrobe.fetched", minutes);
+    }
+
+    /** 当前衣柜按什么数据过滤：收藏 / 配置关闭 / 还没加载。 */
+    private static Component wardrobeFilterLine(WardrobeCollection collection) {
+        ModConfig config = VMFashionClient.getInstance() == null
+                ? null : VMFashionClient.getInstance().getConfig();
+        if (config != null && !config.isWardrobeFilterEnabled()) {
+            return feedback("vmfashion.command.wardrobe.filter_off");
+        }
+        if (!collection.loaded()) {
+            return feedback("vmfashion.command.wardrobe.filter_unloaded");
+        }
+        return collection.linked()
+                ? feedback("vmfashion.command.wardrobe.filter_on")
+                : feedback("vmfashion.command.wardrobe.filter_unlinked");
+    }
+
+    /**
+     * 立即重新拉取网站衣柜收藏。
+     *
+     * <p>这里只发"正在刷新"的提示：真正的成功 / 失败文案由同步层在回调里发
+     * （{@code vmfashion.chat.wardrobe_refreshed} 等），命令侧不重复报一遍结果。
+     */
+    private static int wardrobeRefresh(FabricClientCommandSource source) {
+        source.sendFeedback(feedback("vmfashion.chat.wardrobe_refreshing"));
+        try {
+            SyncService.getInstance().refreshWardrobe(true);
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("刷新衣柜收藏失败: {}", t.toString());
+            source.sendFeedback(feedback("vmfashion.command.wardrobe.refresh_failed", String.valueOf(t)));
+            return 0;
+        }
         return 1;
     }
 

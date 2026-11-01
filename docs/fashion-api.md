@@ -199,6 +199,54 @@ ZIP64、加密 zip、未知压缩算法（只允许 stored / deflate）。
 
 ---
 
+## 3.5 `GET /wardrobe/me` —— 游戏内衣柜的收藏清单（v1.3.0 起）
+
+v1.3.0 起游戏内衣柜**只显示玩家在网站「时装商店」里主动「加入衣柜」的时装**，
+不再列"本地装了哪些包"。客户端进服认证成功后拉这个端点，把结果缓存到
+`config/vmfashion/wardrobe.json`。
+
+### 请求
+
+```http
+GET /api/fashion/wardrobe/me HTTP/1.1
+Authorization: Bearer <fashion token>      # 网页 JWT 也接受（服务端按 principal.user_id 反查）
+User-Agent: VMFashion
+```
+
+### 响应 `200`
+
+```json
+{
+  "linked": true,
+  "items": [
+    { "cosmeticId": "lw_angel:angel", "name": "Angel Wings",
+      "category": "wings", "packId": "lw_angel", "missing": false }
+  ]
+}
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `linked` | ✅ | 该 MC 身份是否已绑定网站账号。**`false` 时 `items` 必须为空**：客户端据此退回「显示本地全部」，而不是当成"衣柜是空的" |
+| `items[].cosmeticId` | ✅ | 全局 ID `<packId>:<localId>`（§3 的格式约定同样适用） |
+| `items[].name` | ⬜ | 展示名；空串时客户端回落到 `cosmeticId` |
+| `items[].category` | ⬜ | `cape` / `wings` / `hat` / `back` / `pet` / `aura` / `other`；未知值客户端按 `other` |
+| `items[].packId` | ⬜ | 所属包，仅用于展示「所属包」与下发提示 |
+| `items[].missing` | ⬜ | 目录里已删除/已停用：客户端显示但**禁止穿戴** |
+
+### 客户端行为（照此实现即可，不需要额外字段）
+
+- 进服认证成功后拉一次；此后每 **5 分钟**最多一次；网站绑定成功后一次；打开衣柜界面时按 **60 秒**节流刷新；
+- **401** → 走一次重新认证后重试（重试那次不再重新认证，避免认证风暴）；
+- **404 / 405 / 501** → 记一次 info 日志，**本次会话不再重试**（自建后端没实现该端点时静默降级）；
+- 其它失败 → 指数退避 30s 起、封顶 5 分钟，**绝不清空**已有收藏（内存 + 磁盘缓存都保留）；
+- 成功 → 整体替换内存镜像 + 原子写 `config/vmfashion/wardrobe.json`。
+
+> 降级矩阵（§9）里这一条同样成立：拿不到收藏时客户端退回"显示本地已装全部时装"，
+> 并在衣柜底部状态行说明原因（未绑定 / 未加载 / 配置关闭），**不会**出现空衣柜。
+
+---
+
 ## 4. 错误响应格式
 
 沿用现有统一格式，两种形状客户端都认：
@@ -432,6 +480,9 @@ curl -s -X POST "$BASE/loadouts/resolve" \
 | `trusted_keys.json` 缺失或损坏 | 回退内置占位公钥 + 宽松模式；带签名的包会因"无匹配公钥"被拒，无签名的包照常放行 |
 | `resolve` 缺 `packId` | 退化为按 `cosmeticId` 前缀推导 packId，仍可工作 |
 | `downloadServerPacks=false`（配置） | 整个服务空转：零请求、零磁盘写入 |
+| `GET /wardrobe/me` 返回 404/405/501 | 记一次 info 后本会话不再刷新收藏；衣柜退回「显示本地全部」 |
+| `GET /wardrobe/me` 网络错误 / 5xx | 指数退避（30s→5min），保留已有收藏（内存 + 磁盘缓存），界面不空 |
+| `linked=false`（身份未绑定网站账号） | 衣柜显示本地全部时装，底部状态行说明「未绑定网站账号」 |
 | 清单 `url` / `apiBaseUrl` 是明文 http（非回环） | 拒绝下载 / 不发送 `Authorization`，日志 warn 一次；同步层报 `insecure_backend`，改 `https` 即恢复 |
 
 ---
