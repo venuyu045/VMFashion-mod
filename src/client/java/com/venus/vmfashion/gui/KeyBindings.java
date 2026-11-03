@@ -2,6 +2,9 @@ package com.venus.vmfashion.gui;
 
 import com.mojang.blaze3d.platform.InputConstants;
 import com.venus.vmfashion.VMFashionClient;
+import com.venus.vmfashion.config.PingSettings;
+import com.venus.vmfashion.ping.PingService;
+import com.venus.vmfashion.ping.gui.PingWheelScreen;
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
@@ -9,7 +12,13 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.resources.Identifier;
 
 /**
- * 快捷键注册（默认 {@code K} 打开衣柜界面）。
+ * 快捷键注册。
+ *
+ * <p>合订版（v2.0）有两组快捷键，都挂在同一个按键分类下：
+ * <ul>
+ *   <li><b>衣柜</b>：默认 {@code K}，打开时装衣柜界面；</li>
+ *   <li><b>标点</b>：默认<b>鼠标中键</b>，按住弹出标点轮盘（原独立模组 VMPing 的行为）。</li>
+ * </ul>
  *
  * <p>由 {@code VMFashionClient} 在初始化时调用 {@link #register()}，
  * 并在每个客户端 tick 调用 {@link #tick()} 消费按键事件。
@@ -24,17 +33,26 @@ import net.minecraft.resources.Identifier;
  *       （旧文档里的 {@code KeyBindingHelper} 已改名，模块也改叫 {@code fabric-key-mapping-api-v1}）。
  *       不经过它注册的按键不会出现在「控制 → 按键绑定」里。</li>
  * </ul>
+ *
+ * <p><b>中键冲突</b>：原版中键是"选取方块"（{@code keyPickItem}）。轮盘打开期间用
+ * {@code ping/mixin/MinecraftPickBlockMixin} 抑制 {@code Minecraft#pickBlockOrEntity}，
+ * 避免"标点顺便把方块复制到手上"；其它时候中键仍是原版行为。
  */
 public final class KeyBindings {
 
     /** 按键分类路径；语言文件里的 key 是 {@code key.category.vmfashion.main}。 */
     private static final String CATEGORY_PATH = "main";
-    /** 按键名称（翻译 key），语言文件 {@code key.vmfashion.open_wardrobe}。 */
+    /** 衣柜按键名称（翻译 key），语言文件 {@code key.vmfashion.open_wardrobe}。 */
     private static final String OPEN_KEY_NAME = "key.vmfashion.open_wardrobe";
-    /** 默认键：K。 */
+    /** 标点按键名称（翻译 key），语言文件 {@code key.vmfashion.ping}。 */
+    private static final String PING_KEY_NAME = "key.vmfashion.ping";
+    /** 衣柜默认键：K。 */
     private static final int DEFAULT_KEY = InputConstants.KEY_K;
+    /** 标点默认键：鼠标中键。 */
+    private static final int DEFAULT_MOUSE_BUTTON = InputConstants.MOUSE_BUTTON_MIDDLE;
 
     private static KeyMapping openWardrobe;
+    private static KeyMapping pingWheel;
     private static boolean registered;
 
     private KeyBindings() {
@@ -55,6 +73,13 @@ public final class KeyBindings {
             // 注册失败只影响快捷键，绝不能让客户端起不来（命令 / 界面仍然可用）
             VMFashionClient.LOGGER.warn("注册衣柜快捷键失败: {}", t.toString());
         }
+        try {
+            KeyMapping.Category category = resolveCategory();
+            pingWheel = KeyMappingHelper.registerKeyMapping(new KeyMapping(
+                    PING_KEY_NAME, InputConstants.Type.MOUSE, DEFAULT_MOUSE_BUTTON, category));
+        } catch (Throwable t) {
+            VMFashionClient.LOGGER.warn("注册标点快捷键失败: {}", t.toString());
+        }
     }
 
     /**
@@ -73,43 +98,68 @@ public final class KeyBindings {
         }
     }
 
-    /** 每客户端 tick 调用；有按键按下就打开界面。 */
+    /** 每客户端 tick 调用；有按键按下就打开对应界面。 */
     public static void tick() {
-        KeyMapping mapping = openWardrobe;
-        if (mapping == null) {
-            return;
-        }
-        // 一次性把积压的点击消费掉：按住 K 不应该排队打开 N 次界面
-        boolean clicked = false;
-        while (mapping.consumeClick()) {
-            clicked = true;
-        }
-        if (!clicked) {
-            return;
-        }
         Minecraft minecraft = Minecraft.getInstance();
         if (minecraft == null) {
             return;
         }
-        // 已经有界面开着（聊天 / 其它模组界面）时不抢占焦点
-        if (minecraft.gui.screen() != null) {
+        if (consumeAll(openWardrobe)) {
+            // 已经有界面开着（聊天 / 其它模组界面）时不抢占焦点
+            if (minecraft.gui.screen() == null) {
+                WardrobeScreen.open();
+            }
             return;
         }
-        WardrobeScreen.open();
+        if (consumeAll(pingWheel) && minecraft.gui.screen() == null && minecraft.player != null) {
+            PingSettings settings = PingService.getInstance().settings();
+            if (settings.isEnabled()) {
+                PingWheelScreen.open();
+            }
+        }
     }
 
-    /** 当前绑定键的可读名称，用于命令提示 / 文档。 */
-    public static String keyName() {
-        KeyMapping mapping = openWardrobe;
+    /**
+     * 一次性把积压的点击消费掉：按住 K / 中键不应该排队打开 N 次界面。
+     *
+     * @return 这一 tick 是否有按下
+     */
+    private static boolean consumeAll(KeyMapping mapping) {
         if (mapping == null) {
-            return "K";
+            return false;
+        }
+        boolean clicked = false;
+        while (mapping.consumeClick()) {
+            clicked = true;
+        }
+        return clicked;
+    }
+
+    /** 衣柜绑定键的可读名称，用于命令提示 / 文档。 */
+    public static String keyName() {
+        return readableName(openWardrobe, "K");
+    }
+
+    /** 标点绑定键的可读名称，用于命令提示 / 文档。 */
+    public static String pingKeyName() {
+        return readableName(pingWheel, "Mouse Middle");
+    }
+
+    /** 标点键（轮盘界面 / 命中判断用；未注册时返回 {@code null}）。 */
+    public static KeyMapping pingKey() {
+        return pingWheel;
+    }
+
+    private static String readableName(KeyMapping mapping, String fallback) {
+        if (mapping == null) {
+            return fallback;
         }
         try {
             Component name = mapping.getTranslatedKeyMessage();
             String text = name == null ? "" : name.getString();
-            return text.isBlank() ? "K" : text;
+            return text.isBlank() ? fallback : text;
         } catch (Throwable t) {
-            return "K";
+            return fallback;
         }
     }
 }

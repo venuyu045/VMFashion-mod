@@ -3,17 +3,23 @@
 ![Minecraft](https://img.shields.io/badge/Minecraft-26.3-62b47a?style=flat-square)
 ![Fabric Loader](https://img.shields.io/badge/Fabric%20Loader-0.20.1-dbb69c?style=flat-square)
 ![Java](https://img.shields.io/badge/Java-25-orange?style=flat-square)
-![Version](https://img.shields.io/badge/version-1.3.1-blue?style=flat-square)
+![Version](https://img.shields.io/badge/version-2.0.0-blue?style=flat-square)
 ![License](https://img.shields.io/badge/license-MIT-success?style=flat-square)
 
 Venus Mc Fashion（VMFashion）是一个 Minecraft **Fabric 纯客户端时装模组**：把你用 Blockbench 做的
 Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家身上，可以和一个网站衣柜做云端同步，
 也可以由服务端自动下发时装包 —— **服务器不需要装任何东西**。
 
+> **v2.0 合订版**：独立标点模组 [VMPing](https://github.com/venuyu045/VMPing-mod) 的标点功能已并入
+> 本模组（中键轮盘 / 5 种标点 / 同服玩家可见 / 屏幕边缘指示）。认证与后端地址复用时装同步层，
+> 玩家只需要登录一次；配置入口在「衣柜 → 设置 → 标点设置」。详见 [`docs/ping.md`](docs/ping.md)。
+
 ```
 按 K 打开衣柜 ──► 选中时装 ──► 立刻穿在身上（第三人称/其他玩家都能看到）
                       │
                       └─► 上报到网站衣柜（可选）──► 换台电脑登录也能穿同一套
+
+按住鼠标中键 ──► 标点轮盘 ──► 松开在看着的地方打标点（同服玩家可见）
 ```
 
 ## 功能
@@ -35,16 +41,22 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 | **时装包自动下发** | 别人穿了本地没装的时装时，按 `sha256` 自动下载并安全解压到 `packs/server/`（可关） |
 | **重启不丢** | 本地穿戴落盘（`loadout.json`），纯本地模式也不会每次重启就光着 |
 | **可选 Mod Menu** | 装了 Mod Menu 会在模组列表里出现「配置」按钮，直接打开衣柜 |
+| **标点轮盘** | v2.0 合订版：默认鼠标中键打开轮盘，5 种标点（注意/危险/物品/集合/求助），同服玩家实时可见，服务器零安装；详见 [`docs/ping.md`](docs/ping.md) |
+| **标点配置入口** | 衣柜 → 设置 → 标点设置：14 个标点配置项可视化修改，点「完成」热生效 |
 | **中英双语** | 界面与命令输出支持简体中文 / English（跟随游戏语言） |
 
 ## 安装（玩家）
 
 1. 装好 **Fabric Loader 0.20.1**（对应 Minecraft **26.3**，需要 **Java 25**）。
-2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-1.3.1.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
+2. 从本仓库的 **Releases** 页面下载 `vmfashion-mc26.3-2.0.0.jar`，和下面两个前置一起放进 `.minecraft/mods/`：
    - **Fabric API** `0.165.0+26.3`（必需）
    - **GeckoLib** `5.5.7`（必需，Bedrock 模型渲染引擎）
    - *可选*：**Mod Menu** `21.0.0`（想要「配置」按钮再装）
 3. 启动游戏，按 **K** 打开衣柜；或 `/vmfashion list` 看已加载的时装、`/vmfashion equip <id>` 穿上。
+   标点：按住**鼠标中键**打开轮盘（详见 [`docs/ping.md`](docs/ping.md)）。
+
+> **从独立版 VMPing 迁移**：先删掉 `mods/vmping-*.jar` 再装本模组。标点功能已内置，
+> 同时安装会重复注册中键快捷键与 HUD；配置不会自动迁移，请到「衣柜 → 设置 → 标点设置」重新设置。
 4. 云端衣柜**默认已开启**，内置官方后端 `https://www.venusyu045.cn/api/fashion`：
    进服后会自动认证；也可以用 `/vmfashion login` 手动重新认证、
    `/vmfashion bind` 绑定网站账号。想用自建后端就改 `config/vmfashion/config.json`
@@ -96,7 +108,7 @@ bash tools/uipreview/serve.sh  # 可交互界面预览（浏览器里点真实�
 
 `tools/verify/` 用**真实生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`，
 检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩 / 动画骨骼名 / 坏模型兜底，
-并用 ASM 校验全部 13 个 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
+并用 ASM 校验全部 15 个 mixin 的目标方法签名（含 v2.0 新增的 2 个标点 mixin；详见 `tools/verify/README.md`）。
 
 `tools/uipreview/` 把 `WardrobeScreen` 的**真实绘制代码**跑在没有显卡的 JVM 里：
 `GuiGraphicsExtractor` 换成录制器（MC 26.x 是提取式渲染，绘制只是往渲染状态写命令），
@@ -112,6 +124,13 @@ CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测
 | 命令 | 说明 |
 |------|------|
 | `/vmfashion open`（或 `/gui`） | 打开衣柜界面（等同按 `K`） |
+| `/vmfashion ping` | 按准星方向直接标一个「注意」（不打开轮盘） |
+| `/vmfashion ping [类型]` | 按准星方向标点（`default` / `danger` / `item` / `go` / `help`） |
+| `/vmfashion ping open` | 打开标点轮盘（等同按住鼠标中键） |
+| `/vmfashion ping settings` | 打开标点设置界面 |
+| `/vmfashion ping status` | 标点中继状态 / 房间 / 维度 / 后端地址 |
+| `/vmfashion ping config reload` | 重读配置并重启标点中继 |
+| `/vmfashion ping debug` | 标点诊断信息（房间键、归一化地址、错误详情） |
 | `/vmfashion list` | 列出所有已加载的包和时装 ID |
 | `/vmfashion equip <id>` | 穿上某件时装（按分类替换） |
 | `/vmfashion unequip <category>` | 脱下某个分类 |
@@ -150,6 +169,7 @@ v1.2.0 及更早版本里留空的 `apiBaseUrl` 会在升级后**自动补成官
 | `uiScale` | `1.0` | 衣柜界面缩放（0.5–2.0） |
 | `animationDuration` | `200` | 界面打开动画时长（毫秒，0 = 不做动画） |
 | `toastEnabled` | `true` | 是否显示 Toast 提示 |
+| `ping` | 见 [`docs/ping.md`](docs/ping.md) §4 | 标点配置对象（v2.0 新增）：14 个字段，游戏内「标点设置」可视化修改 |
 
 ## 云端同步
 
@@ -260,7 +280,7 @@ config/vmfashion/packs/<packId>/
 
 | 文件 / 目录 | 说明 |
 |---|---|
-| `config.json` | 模组配置 |
+| `config.json` | 模组配置（含 `ping` 标点配置对象） |
 | `session.json` | 后端认证 token（含过期时间，过期会自动重新认证） |
 | `loadout.json` | 本地穿戴（重启不丢；云端有数据时以云端为准） |
 | `ui_state.json` | 界面状态（上次选中的分类） |
@@ -285,6 +305,10 @@ config/vmfashion/packs/<packId>/
   `finally` 里立刻还原 —— 不 clone 骨骼树，也不会让 A 的动画出现在 B 身上。
 - **热路径零分配**：`PoseStack` 用 `ThreadLocal` 复用、顶点发射复用 `Vector3f/Vector4f`、
   loadout 快照按 tick 缓存、失败缓存带 30 秒 TTL（修好包后不用重启游戏）。
+- **标点复用时装认证**：标点中继（`ping/net/PingRelay`）不自己跑 challenge/verify，而是通过
+  `PingAuthBridge` 复用同步层的 `FashionAuth` 会话；后端地址默认由 `apiBaseUrl` 推导
+  （`/api/fashion` → `/api/ping`），玩家只需要配一次后端。渲染走 `HudElementRegistry.addLast`，
+  相机矩阵由 `mixin/ping/GameRendererMixin` 在 GUI 提取前抓取（26.3 没有 WorldRenderEvents）。
 
 ## 当前限制
 
@@ -304,6 +328,9 @@ config/vmfashion/packs/<packId>/
   且客户端内置公钥目前是**占位值**，真正的信任锚要靠 `config/vmfashion/trusted_keys.json` 配置。
   要"陌生人敢装"的强保证，需要官方后端发布公钥 + 开启 `requireSignature`。
 - **内容审核**：举报 / 下架是后端能力，mod 端已支持 `missing=true` 跳过。
+- **标点中继是纯内存单进程**：多 worker 部署时同一房间的玩家可能落到不同进程、互相收不到标点
+  （后端既有约束）；单机 / 局域网世界不同步（只本地标点）。
+- **标点不做持久化**：标点 20 秒自动过期，重进服务器 / 换维度后旧标点不会恢复。
 
 ## 许可证
 

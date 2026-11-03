@@ -7,6 +7,7 @@ import com.venus.vmfashion.cosmetic.LocalLoadout;
 import com.venus.vmfashion.cosmetic.WardrobeCollection;
 import com.venus.vmfashion.cosmetic.PackLoader;
 import com.venus.vmfashion.gui.KeyBindings;
+import com.venus.vmfashion.ping.PingService;
 import com.venus.vmfashion.render.CosmeticAssets;
 import com.venus.vmfashion.resource.ClientResourceReloader;
 import com.venus.vmfashion.resource.DefaultPackInstaller;
@@ -16,6 +17,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,12 +34,17 @@ public class VMFashionClient implements ClientModInitializer {
     public static final Logger LOGGER = LoggerFactory.getLogger(MOD_ID);
 
     private static VMFashionClient instance;
+    /** 模组版本（HTTP User-Agent / 诊断用），来自 fabric.mod.json 的版本字段。 */
+    private static String cachedVersion = "0.0.0";
     private volatile ModConfig config;
 
     @Override
     public void onInitializeClient() {
         instance = this;
-        LOGGER.info("[{}] 正在初始化...", MOD_NAME);
+        cachedVersion = FabricLoader.getInstance().getModContainer(MOD_ID)
+                .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                .orElse("0.0.0");
+        LOGGER.info("[{}] 正在初始化（v{}）...", MOD_NAME, cachedVersion);
 
         // 初始化配置（缺失字段自动用默认值，兼容旧 config.json）
         config = ModConfig.load();
@@ -64,15 +71,25 @@ public class VMFashionClient implements ClientModInitializer {
         SyncService.getInstance().initialize(config);
         AssetSyncService.getInstance().initialize(config);
 
-        // 进服时认证并刷新远端缓存，离服时清缓存
-        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> SyncService.getInstance().onJoin());
-        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> SyncService.getInstance().onDisconnect());
+        // 合订版标点（原 VMPing）：注册 HUD，认证复用上面的 SyncService 会话
+        PingService.getInstance().initialize(config);
 
-        // 每 tick：快捷键、周期性刷新、资产下发队列
+        // 进服时认证并刷新远端缓存，离服时清缓存；标点中继跟着进服/退服启停
+        ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
+            SyncService.getInstance().onJoin();
+            PingService.getInstance().onJoin();
+        });
+        ClientPlayConnectionEvents.DISCONNECT.register((handler, client) -> {
+            SyncService.getInstance().onDisconnect();
+            PingService.getInstance().onDisconnect();
+        });
+
+        // 每 tick：快捷键、周期性刷新、资产下发队列、标点中继维护
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             KeyBindings.tick();
             SyncService.getInstance().tick();
             AssetSyncService.getInstance().tick();
+            PingService.getInstance().tick();
         });
 
         // 客户端命令 /vmfashion + 快捷键
@@ -103,6 +120,11 @@ public class VMFashionClient implements ClientModInitializer {
      */
     public ModConfig getConfig() {
         return config;
+    }
+
+    /** 模组版本（{@code fabric.mod.json} 里展开后的版本号）。 */
+    public static String version() {
+        return cachedVersion;
     }
 
     /** 配置热更新时整体替换（{@code /vmfashion config reload}）。 */

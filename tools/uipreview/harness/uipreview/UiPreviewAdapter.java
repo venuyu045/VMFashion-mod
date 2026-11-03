@@ -43,6 +43,16 @@ public interface UiPreviewAdapter {
     Screen createScreen();
 
     /**
+     * 按场景创建界面（一个 mod 有多个界面时用）。
+     *
+     * <p>默认实现忽略场景名、退回 {@link #createScreen()}，所以只预览一个界面的适配器
+     * 不用改。多界面适配器覆写本方法：例如 {@code "settings"} 返回设置界面。
+     */
+    default Screen createScreen(String scenario) {
+        return createScreen();
+    }
+
+    /**
      * 按场景灌测试数据。
      *
      * <p>每次重置场景都会调用一次，实现里要保证<b>幂等</b>（重复调用不会叠加数据）。

@@ -66,6 +66,23 @@ else
     FAIL=1
 fi
 
+# v2.0 合订版关键类：标点子系统 + 设置界面（漏打包 = 玩家看不到入口 / 中键没反应）
+for class in \
+    'com/venus/vmfashion/ping/PingService.class' \
+    'com/venus/vmfashion/ping/net/PingRelay.class' \
+    'com/venus/vmfashion/ping/gui/PingWheelScreen.class' \
+    'com/venus/vmfashion/mixin/ping/GameRendererMixin.class' \
+    'com/venus/vmfashion/mixin/ping/MinecraftPickBlockMixin.class' \
+    'com/venus/vmfashion/gui/SettingsScreen.class' \
+    'com/venus/vmfashion/gui/PingSettingsScreen.class'; do
+    if printf '%s\n' "$LIST" | grep -q " $class\$"; then
+        echo "  [OK]   $class"
+    else
+        echo "  [FAIL] 缺少 $class" >&2
+        FAIL=1
+    fi
+done
+
 # 依赖不能被打进 jar（GeckoLib / Fabric API 由玩家自己装）
 if printf '%s\n' "$LIST" | grep -q 'META-INF/jars/'; then
     echo "  [WARN] jar 内嵌了依赖（META-INF/jars/），确认这是有意为之"

@@ -3,6 +3,7 @@ package com.venus.vmfashion.config;
 import com.venus.vmfashion.VMFashionClient;
 import com.venus.vmfashion.cosmetic.PackLoader;
 import com.venus.vmfashion.loadout.LoadoutService;
+import com.venus.vmfashion.ping.PingService;
 import com.venus.vmfashion.render.CosmeticAssets;
 import com.venus.vmfashion.sync.AssetSyncService;
 import com.venus.vmfashion.sync.SyncService;
@@ -41,6 +42,8 @@ public final class ConfigReloader {
 
         SyncService.getInstance().initialize(fresh);
         AssetSyncService.getInstance().initialize(fresh);
+        // 标点中继依赖同步层的新 FashionAuth 实例，必须在它重建之后再重启
+        PingService.getInstance().applyConfig(fresh);
 
         PackLoader.LoadResult result = PackLoader.reload();
         LoadoutService.getInstance().invalidate();

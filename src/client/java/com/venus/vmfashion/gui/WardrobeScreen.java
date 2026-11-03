@@ -231,6 +231,8 @@ public final class WardrobeScreen extends Screen {
     private Button equipButton;
     private Button unequipButton;
     private Button closeButton;
+    /** 设置按钮（v2.0）：打开时装设置界面，里面还有「标点设置…」二级入口。 */
+    private Button settingsButton;
 
     /** 当前分类（{@code null} = 全部）。 */
     private CosmeticCategory selectedCategory;
@@ -558,14 +560,29 @@ public final class WardrobeScreen extends Screen {
 
         // 返回 / 关闭：右上角，位置固定在头部
         int closeWidth = Math.max(38, Math.round(52 * uiScale));
+        int closeX = panelX + panelWidth - padding - closeWidth;
+        int headerButtonY = panelY + (headerHeight - buttonHeight) / 2;
         this.closeButton = Button.builder(Component.translatable(
                         parent == null ? "vmfashion.gui.close" : "vmfashion.gui.back"),
                         button -> onClose())
-                .bounds(panelX + panelWidth - padding - closeWidth,
-                        panelY + (headerHeight - buttonHeight) / 2,
-                        closeWidth, buttonHeight)
+                .bounds(closeX, headerButtonY, closeWidth, buttonHeight)
                 .build();
         this.addRenderableWidget(this.closeButton);
+
+        // 设置：紧挨着「关闭」左侧。v2.0 起配置项变多（含标点 14 项），没有可视化入口不行
+        int settingsWidth = Math.max(34, Math.round(48 * uiScale));
+        this.settingsButton = Button.builder(Component.translatable("vmfashion.gui.settings"),
+                        button -> openSettings())
+                .bounds(closeX - padding - settingsWidth, headerButtonY, settingsWidth, buttonHeight)
+                .build();
+        this.addRenderableWidget(this.settingsButton);
+    }
+
+    /** 打开时装设置界面（返回时回到衣柜）。 */
+    private void openSettings() {
+        if (this.minecraft != null) {
+            this.minecraft.gui.setScreen(new SettingsScreen(this));
+        }
     }
 
     @Override

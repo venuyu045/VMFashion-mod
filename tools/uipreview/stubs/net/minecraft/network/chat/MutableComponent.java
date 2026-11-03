@@ -1,5 +1,7 @@
 package net.minecraft.network.chat;
 
+import net.minecraft.ChatFormatting;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.UnaryOperator;
@@ -86,6 +88,18 @@ public final class MutableComponent implements Component {
     @Override
     public MutableComponent withStyle(Style newStyle) {
         this.style = newStyle == null ? Style.EMPTY : newStyle;
+        return this;
+    }
+
+    @Override
+    public MutableComponent setStyle(Style newStyle) {
+        this.style = newStyle == null ? Style.EMPTY : newStyle;
+        return this;
+    }
+
+    @Override
+    public MutableComponent withStyle(ChatFormatting formatting) {
+        // 预览器不还原颜色码，只要保证真实控件的调用链不因缺方法崩溃
         return this;
     }
 

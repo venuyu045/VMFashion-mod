@@ -16,6 +16,7 @@ import com.venus.vmfashion.gui.WardrobeScreen;
 import com.venus.vmfashion.loadout.LoadoutService;
 import com.venus.vmfashion.loadout.WornCosmetic;
 import com.venus.vmfashion.net.FashionAuth;
+import com.venus.vmfashion.ping.command.PingCommand;
 import com.venus.vmfashion.render.CosmeticAssets;
 import com.venus.vmfashion.render.anim.AnimationCache;
 import com.venus.vmfashion.sync.AssetSyncService;
@@ -51,7 +52,7 @@ public final class FashionCommand {
 
     private static void build(CommandDispatcher<FabricClientCommandSource> dispatcher,
                               CommandBuildContext registryAccess) {
-        dispatcher.register(ClientCommands.literal("vmfashion")
+        var root = ClientCommands.literal("vmfashion")
                 .then(ClientCommands.literal("reload").executes(ctx -> reload()))
                 .then(ClientCommands.literal("list").executes(ctx -> list()))
                 .then(ClientCommands.literal("status").executes(ctx -> status(ctx.getSource())))
@@ -82,7 +83,10 @@ public final class FashionCommand {
                                 .executes(ctx -> equip(StringArgumentType.getString(ctx, "id")))))
                 .then(ClientCommands.literal("unequip")
                         .then(ClientCommands.argument("category", StringArgumentType.word())
-                                .executes(ctx -> unequip(StringArgumentType.getString(ctx, "category"))))));
+                                .executes(ctx -> unequip(StringArgumentType.getString(ctx, "category")))));
+        // 合订版标点：/vmfashion ping ...（子命令由 ping 子系统自己挂，避免命令表两处维护）
+        PingCommand.attach(root);
+        dispatcher.register(root);
     }
 
     private static int reload() {

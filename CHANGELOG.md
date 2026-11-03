@@ -12,22 +12,32 @@
 - 后端多 worker（Redis 或粘性会话）
 - 衣柜键盘导航（本轮已给方案，见 `research/audit-v1.2/mod-fixes.md` §3）
 
-### 新增（开发工具）
+## [2.0.0] - 2026-11-03
 
-- **`tools/uipreview/` 改造成可跨项目复用**。原来它把 `WardrobeScreen`、`Fixtures`、
-  场景表全硬编码在内核里，换一个 mod 就得改内核代码。现在分成两层：
-  - **内核**（`stubs/` + `harness/` + `web/` + `assets/`）：不认识任何项目类，
-    只通过 `UiPreviewAdapter` 接口问"预览哪个界面、造什么数据、有哪些场景"；
-  - **适配层**（`app/` + `fake/`）：唯一知道项目类名的地方。
-  移植五步见 `tools/uipreview/PORTING.md`（已在 VMTools 项目上实测跑通）。
-  顺带补上的通用能力：
-  - `--all` 改为遍历适配器声明的场景（脚本不再硬编码场景名）；
-  - 支持**一个 mod 多个界面**（`createScreen(scenario)`，`--scenario=settings` 能预览设置界面）；
-  - 交互事件补 `release`（很多界面把"没拖动就当点击"放在 `mouseReleased` 里）；
-  - 渲染器支持 `§0`–`§f` 原版颜色码（原来会原样画出 `§a开启`）；
-  - 新增 `FabricLoader` 替身（把配置目录指到可写临时目录），
-    让那些直接用 `FabricLoader.getInstance().getConfigDir()` 的类能跑通；
-  - `/info` 返回 `title` / `scenarios` / `state`，网页的场景下拉框改为动态填充。
+「合订版」：把独立标点模组 **VMPing** 完整并入时装模组 —— 标点复用时装账号体系与后端，
+配置入口进游戏内「时装设置 → 标点设置」，玩家只需要登录一次、配一次后端。
+配套后端（VMTools-Web）的 `/api/ping` 已支持时装 token 并已上线；独立版 VMPing 仓库保持原样。
+
+### 新增（标点：VMPing 合订版）
+
+- **独立标点模组 [VMPing](https://github.com/venuyu045/VMPing-mod) 的功能完整并入**，作为时装模组的附属功能发布（`com.venus.vmfashion.ping` 子系统）。独立版 VMPing 仓库不再更新，协议 v1.1 对合订版仍然适用。
+- **标点轮盘**：默认按住**鼠标中键**弹出轮盘（注意 / 危险 / 物品 / 集合 / 求助 5 种），松开在准星方向打标点，Esc 取消；轮盘打开期间用 mixin 抑制原版「选取方块」。
+- **多人可见**：标点经 `/api/ping` 中继长轮询同步给同服玩家（服务器零安装），世界内渲染类型图标 + 距离 + 标点者名字（按住 Tab 强制显示名字），屏幕外画边缘方向箭头，20 秒 TTL 最后 3 秒淡出。
+- **降级可用**：未登录时装后端 / 后端不可达 / 单机 / 局域网 → 自动退化为本地标点（功能照用，只是别人看不见），HUD 状态角标说明原因，不弹窗不刷屏。
+- **认证复用时装账号体系**：标点中继不再自己跑 challenge/join/verify，通过新增的 `PingAuthBridge` 复用同步层的 `FashionAuth` 会话（同一个 MC 账号、同一份 24h token）；token 过期 / 401 时自动重新认证。配套后端 `/api/ping` 已改为同时接受 `aud=fashion` 与 `aud=ping`（旧独立版 VMPing 客户端不受影响），见 VMTools-Web `docs/ping-api.md`。
+- **后端地址默认跟随时装后端**：`/api/fashion` → `/api/ping` 自动推导，玩家只需要配一次后端；也可以在标点设置里单独覆盖。
+- **14 个标点配置项**：`config.json` 新增 `ping` 对象（开关 / 显示项 / 音量 / 最远距离 / TTL / 长轮询 / 边缘箭头 / 状态角标 / 降级 / 调试日志 / 后端覆盖地址），全部可在游戏内修改并热生效。完整表格见新增的 [`docs/ping.md`](docs/ping.md)。
+- **命令**：`/vmfashion ping`、`/vmfashion ping [类型]`、`/vmfashion ping open|settings|status|debug|help`、`/vmfashion ping config reload`（不再注册顶层 `/vmping`，避免与仍装独立版的玩家冲突）。
+- **键位**：新增「标点」键位（默认鼠标中键），与衣柜 `K` 同分类，可在「设置 → 控制 → 按键绑定」改键。
+- **独立版检测**：同时装了独立 VMPing 时，聊天栏提示移除（会重复注册中键与 HUD）。
+- **测试**：移植 8 组 / 75 个纯逻辑用例（协议编解码、房间键、投影、轮盘几何、边缘箭头、存储）；新增 `PingSettingsTest` 覆盖默认值 / 越界收敛 / 后端地址推导。
+
+### 新增（设置界面）
+
+- **游戏内时装设置界面 `gui/SettingsScreen`**：14 个时装配置项（UI 缩放 / 动画 / Toast / 总开关 / 渲染他人 / 渲染距离 / 模型缩放 / 同步开关 / 衣柜过滤 / 刷新间隔 / 后端地址 / 皮肤站 / 下载服务器包 / 缓存上限）可视化修改 —— 此前只能手改 `config.json`。完成 = 写回配置 + 存盘 + `ConfigReloader.reload()` 热生效；取消丢弃；恢复默认。
+- **标点设置界面 `gui/PingSettingsScreen`**：标点全部 14 个配置项 + 「实际使用的后端地址」显示（跟随时装后端推导的结果），入口在时装设置里。
+- **衣柜 header 新增「设置」按钮**（「关闭」左侧），打开时装设置。
+- 两套界面沿用 `VanillaStyle` 原版容器色板（与衣柜一致：浅灰面板、深灰文字、凸起/凹陷，不用紫色描边），自适应窗口大小与 GUI 缩放。
 
 ### 变更（界面）
 
@@ -64,6 +74,21 @@
 
 ### 新增（开发工具）
 
+- **`tools/uipreview/` 改造成可跨项目复用**。原来它把 `WardrobeScreen`、`Fixtures`、
+  场景表全硬编码在内核里，换一个 mod 就得改内核代码。现在分成两层：
+  - **内核**（`stubs/` + `harness/` + `web/` + `assets/`）：不认识任何项目类，
+    只通过 `UiPreviewAdapter` 接口问"预览哪个界面、造什么数据、有哪些场景"；
+  - **适配层**（`app/` + `fake/`）：唯一知道项目类名的地方。
+  移植五步见 `tools/uipreview/PORTING.md`（已在 VMTools 项目上实测跑通）。
+  顺带补上的通用能力：
+  - `--all` 改为遍历适配器声明的场景（脚本不再硬编码场景名）；
+  - 支持**一个 mod 多个界面**（`createScreen(scenario)`，`--scenario=settings` 能预览设置界面）；
+  - 交互事件补 `release`（很多界面把"没拖动就当点击"放在 `mouseReleased` 里）；
+  - 渲染器支持 `§0`–`§f` 原版颜色码（原来会原样画出 `§a开启`）；
+  - 新增 `FabricLoader` 替身（把配置目录指到可写临时目录），
+    让那些直接用 `FabricLoader.getInstance().getConfigDir()` 的类能跑通；
+  - `/info` 返回 `title` / `scenarios` / `state`，网页的场景下拉框改为动态填充。
+
 - **`tools/uipreview/`：无头 UI 预览器 —— 不用显卡、不用启动游戏就能看界面，而且能在浏览器里真的点。**
   背景：开发机无 X / 无 libGL / cgroup 1.2GB，起不了客户端；查遍现有工具（详见
   `docs/ui-preview-tooling.md`）发现**没有任何现成方案**能同时满足「不启动客户端 + 预览任意
@@ -84,6 +109,13 @@
   - 过程中核对出三处「猜错就会让预览骗人」的语义：`outline` 参数是 `(x,y,w,h)` 而不是
     `(x0,y0,x1,y1)`；鼠标左键编号是 SDL3 的 **1** 而不是 GLFW 的 0；`text` 的颜色会被
     `Component` 自带样式覆盖。详见 `tools/uipreview/README.md`「踩过的坑」。
+
+### 工程 / 发布
+
+- 版本号升至 **2.0.0**（新增标点功能，旧 `config.json` 向后兼容：没有 `ping` 对象时使用默认值）。
+- `fabric.mod.json` 描述补充标点功能；README 更新功能 / 安装 / 命令 / 配置 / 限制章节；新增 `docs/ping.md`；`docs/architecture.md` 补标点链路。
+- UI 预览器新增 `settings` / `ping_settings` 两个场景（支持一个 mod 多界面），`--all` 共 10 个场景出图 + 布局自检；新增 `AbstractSliderButton` / `ConfigReloader` / `ChatFormatting` 等预览替身。
+- 渲染自检的 mixin 校验从 13 个增加到 15 个（新增 2 个标点 mixin）。
 
 ## [1.3.1] - 2026-11-02
 

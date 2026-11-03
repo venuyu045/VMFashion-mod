@@ -2,6 +2,8 @@ package com.venus.vmfashion.uipreview;
 
 import com.venus.vmfashion.cosmetic.LocalLoadout;
 import com.venus.vmfashion.cosmetic.WardrobeCollection;
+import com.venus.vmfashion.gui.PingSettingsScreen;
+import com.venus.vmfashion.gui.SettingsScreen;
 import com.venus.vmfashion.gui.WardrobeScreen;
 import com.venus.vmfashion.sync.AssetSyncService;
 import com.venus.vmfashion.sync.SyncService;
@@ -57,11 +59,27 @@ public final class VmfashionAdapter implements UiPreviewAdapter {
     }
 
     @Override
+    public Screen createScreen(String scenario) {
+        // v2.0 起一个 mod 有三个界面：衣柜（主界面）+ 时装设置 + 标点设置。
+        // 预览器按场景名决定创建哪个，内核不需要知道这些类。
+        return switch (scenario) {
+            case "settings" -> new SettingsScreen(null);
+            case "ping_settings" -> new PingSettingsScreen(null);
+            default -> new WardrobeScreen(null);
+        };
+    }
+
+    @Override
     public void installFixtures(String scenario, Path workDir) throws Exception {
         // 场景之间必须完全隔离：UIState 是"记住上次选中的分类"，同一 JVM 里连续跑多个场景时
         // 上一个场景点的 tab 会被下一个场景继承（--all 时表现为"后面的场景只剩 2 件"）。
         // 内核不知道项目有哪些静态状态，这一步只能由适配器负责。
         UIState.resetForPreview();
+
+        // 设置界面不依赖时装数据：跳过 fixtures 安装，场景之间保持独立
+        if ("settings".equals(scenario) || "ping_settings".equals(scenario)) {
+            return;
+        }
 
         boolean empty = "empty".equals(scenario);
         List<Fixtures.Spec> specs = empty ? Fixtures.emptySpecs() : Fixtures.defaultSpecs();
@@ -93,6 +111,8 @@ public final class VmfashionAdapter implements UiPreviewAdapter {
         map.put("empty", Scenario.of("empty", "空衣柜"));
         map.put("not_linked", Scenario.of("not_linked", "未绑定网站"));
         map.put("missing_pack", Scenario.of("missing_pack", "未下载时装包"));
+        map.put("settings", Scenario.of("settings", "时装设置界面"));
+        map.put("ping_settings", Scenario.of("ping_settings", "标点设置界面"));
         return map;
     }
 

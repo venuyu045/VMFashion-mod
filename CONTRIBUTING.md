@@ -233,7 +233,7 @@ bash tools/verify/run.sh
    - X 轴镜像方向正确；
    - `attachedBone` 跟随头部旋转；
 2. **mixin 目标方法**：解析每个 mixin 的 `@Mixin` / `@Inject`，用 ASM 检查目标类里
-   确实存在对应的 `name + descriptor`（13 个 mixin 全部校验）；
+   确实存在对应的 `name + descriptor`（15 个 mixin 全部校验，含 v2.0 新增的 2 个标点 mixin）；
 3. **缩放原点**：确认 `scale` 是绕挂载 pivot（头饰放大不会飞出去），不是绕脚底；
 4. **emissive 遮罩**：逐 quad 过滤（UV 落在透明区域的面不发光、全透明 → 空遮罩）；
 5. **动画解析**：`anim.json` 能解析成动画、动画里的骨骼名在烘焙后的模型里**真的存在**、

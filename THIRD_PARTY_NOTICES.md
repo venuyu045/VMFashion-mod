@@ -8,6 +8,11 @@ VMFashion 是**纯客户端模组**，构建产物 `vmfashion-mc26.3-<version>.j
 `fabric.mod.json`、`vmfashion.mixins.json`、本项目的 LICENSE），
 **没有内嵌（shade / include）任何第三方库**。
 
+> v2.0 合订版新增的 `com/venus/vmfashion/ping/**` 来自同作者、同 MIT 许可证的
+> [VMPing](https://github.com/venuyu045/VMPing-mod) 项目（见 §6）；VMPing 在设计上参考了
+> [Minecraft-Ping-Wheel](https://github.com/LukenSkyne/Minecraft-Ping-Wheel)（MIT），
+> 属于独立重写、未复制其源文件，但按 MIT 要求附上其许可声明（见 §6）。
+
 下面这些项目**不随本仓库分发**，只作为编译期 / 运行期依赖存在，由玩家或构建环境自行获取，
 各自遵循其原始许可证。
 
@@ -78,3 +83,39 @@ VMFashion 是**纯客户端模组**，构建产物 `vmfashion-mc26.3-<version>.j
 
 *本文件随依赖版本更新。版本号来源：`gradle.properties`（`geckolib_version`、`loader_version`、
 `fabric_api_version`、`modmenu_version`、`junit_version`）与 `gradle/wrapper/gradle-wrapper.properties`。*
+
+---
+
+## 6. 标点子系统的来源与许可（v2.0 合订版）
+
+| 项目 | 作者 | 许可证 | 与本项目的关系 |
+|---|---|---|---|
+| [VMPing（Venus Mc Ping）](https://github.com/venuyu045/VMPing-mod) | Venus（venuyu045） | **MIT** | v2.0 起其标点功能源码并入本仓库（`com/venus/vmfashion/ping/**`），改写包名/配置/认证接线，算法与协议逻辑保留 |
+| [Minecraft-Ping-Wheel](https://github.com/LukenSkyne/Minecraft-Ping-Wheel) | Luca v. d. W.（Luken）与贡献者 | **MIT** | VMPing 的**设计参考**（轮盘交互、射线拾取、世界坐标→屏幕投影、边缘指示、中键冲突处理思路）；独立重写，未复制源文件 |
+
+VMPing 与本项目同为 Venus 的 MIT 项目，代码合并已获得原作者（即本项目作者）许可。
+Minecraft-Ping-Wheel 的 MIT 许可全文如下（按 MIT 要求随分发保留）：
+
+```
+The MIT License (MIT)
+
+Copyright (c) 2023
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+```

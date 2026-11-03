@@ -150,6 +150,18 @@ public class ModConfig {
      */
     private boolean wardrobeFilterEnabled = true;
 
+    // ==================== 标点（VMPing 合订版）配置 ====================
+
+    /**
+     * 标点功能配置（原独立模组 VMPing 的全部可配置项）。
+     *
+     * <p>v2.0 起标点功能并入本模组，配置跟着时装配置走同一个 {@code config.json}：
+     * 认证复用时装账号体系（同一份 token），后端地址默认从 {@link #apiBaseUrl} 推导
+     * （{@code /api/fashion} → {@code /api/ping}），所以玩家只需要配一次后端。
+     * 细节见 {@link PingSettings}。
+     */
+    private PingSettings ping = new PingSettings();
+
     // ==================== 资产下发配置 ====================
 
     // 是否自动下载服务端下发的时装包（关闭后只渲染本地已装的包）
@@ -209,6 +221,11 @@ public class ModConfig {
         authServer = authServer == null ? "" : authServer.trim();
         refreshIntervalSeconds = Math.max(0, Math.min(3600, refreshIntervalSeconds));
         maxPackCacheMb = Math.max(0, Math.min(8192, maxPackCacheMb));
+        // 手改坏的 JSON 可能把 ping 写成 null / 越界值：兜住，不能让标点层 NPE
+        if (ping == null) {
+            ping = new PingSettings();
+        }
+        ping.sanitize();
         migrateLegacyDefaults();
     }
 
@@ -384,5 +401,20 @@ public class ModConfig {
     /** 是否处于"纯本地模式"（完全没配后端地址）。 */
     public boolean isLocalOnly() {
         return getApiBaseUrl().isBlank();
+    }
+
+    // ==================== 标点（VMPing 合订版）配置 ====================
+
+    /** 标点配置（永不返回 {@code null}；老配置文件没有该对象时是默认值）。 */
+    public PingSettings getPing() {
+        if (ping == null) {
+            ping = new PingSettings();
+        }
+        return ping;
+    }
+
+    /** 替换标点配置（GUI「恢复默认」用；传 null 等价于恢复默认）。 */
+    public void setPing(PingSettings ping) {
+        this.ping = ping == null ? new PingSettings() : ping;
     }
 }

@@ -1,11 +1,11 @@
 # tools/uipreview —— 无头 UI 预览器
 
-把 mod 的游戏内界面（`WardrobeScreen`）渲染成 PNG，并且**能在浏览器里真的点**：
+把 mod 的游戏内界面（`WardrobeScreen` / `SettingsScreen` / `PingSettingsScreen`）渲染成 PNG，并且**能在浏览器里真的点**：
 点击、滚轮、打字都走生产代码的同一条路径，不需要显卡、不需要启动 Minecraft。
 
 ```bash
 bash tools/uipreview/run.sh                      # 出一张默认场景的图
-bash tools/uipreview/run.sh --all --report       # 8 个场景各出一张 + 布局自检
+bash tools/uipreview/run.sh --all --report       # 10 个场景各出一张 + 布局自检（衣柜 8 + 设置 2）
 bash tools/uipreview/serve.sh                    # 起交互服务，浏览器里点
 ```
 
@@ -65,7 +65,7 @@ PNG
 
 ```bash
 bash tools/uipreview/run.sh --scenario=default              # 单张
-bash tools/uipreview/run.sh --all                           # 全部 8 个场景
+bash tools/uipreview/run.sh --all                           # 全部 10 个场景
 bash tools/uipreview/run.sh --all --report                  # 附带布局自检
 bash tools/uipreview/run.sh --width=960 --height=540 --scale=1 --locale=en_us
 ```

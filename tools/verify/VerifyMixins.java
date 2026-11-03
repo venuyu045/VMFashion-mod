@@ -50,7 +50,10 @@ public final class VerifyMixins {
         try (URLClassLoader loader = new URLClassLoader(urls.toArray(new URL[0]), ClassLoader.getPlatformClassLoader())) {
             for (var element : client) {
                 String simpleName = element.getAsString();
-                Path classFile = classesDir.resolve(pkg.replace('.', '/')).resolve(simpleName + ".class");
+                // mixin json 的 client 列表允许带子包（如 v2.0 的 "ping.GameRendererMixin"），
+                // 相对名里的点也要转成目录分隔符，否则会去找 "ping.GameRendererMixin.class" 这个不存在的文件
+                String relative = simpleName.replace('.', '/');
+                Path classFile = classesDir.resolve(pkg.replace('.', '/')).resolve(relative + ".class");
                 checkMixin(loader, classFile, pkg + "." + simpleName);
             }
         }

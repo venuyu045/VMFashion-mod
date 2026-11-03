@@ -53,7 +53,7 @@ com.venus.vmfashion
 │       ├── AnimationTrack     一条关键帧轨道（线性插值 + 循环回绕）
 │       ├── AnimationFrame     每（玩家 × 时装）一份骨骼快照
 │       └── AnimationCache     uuid|cosmeticId → AnimationFrame（30 秒空闲淘汰）
-├── mixin/                     13 个客户端 mixin（见 §3.1 / §3.4）
+├── mixin/                     15 个客户端 mixin（见 §3.1 / §3.4；ping/ 下 2 个标点 mixin 见 §10）
 ├── loadout/                   同步层与渲染层之间的唯一入口
 │   ├── LoadoutProvider        接口：resolve(uuids) → CompletableFuture
 │   ├── LocalOnlyProvider      纯本地模式的空实现
@@ -70,7 +70,19 @@ com.venus.vmfashion
 ├── sync/
 │   ├── SyncService            认证 / 拉取 / 上报 / 绑定 / 定时刷新 / 错误提示
 │   └── AssetSyncService       服务端包下发队列（下载 → 解压 → 校验 → 原子安装 → reload）
-├── gui/                       衣柜界面（WardrobeScreen + 组件 + 快捷键 K）
+├── gui/                       衣柜 / 设置界面（WardrobeScreen / SettingsScreen / PingSettingsScreen + 组件 + 快捷键）
+├── ping/                      ★ 标点子系统（v2.0 合订版，原独立模组 VMPing）
+│   ├── PingService            生命周期：HUD 注册 / 进服启动 / 退服停止 / tick / 热更新 / 音效
+│   ├── config.PingSettings    14 个标点配置项 + 界面常量 + 后端地址推导（挂在 ModConfig#getPing）
+│   ├── core/                  房间键 / 标点存储 / 时钟 / 协议数据（纯逻辑，有单测）
+│   ├── net/PingRelay          中继状态机：认证 → 长轮询 → 发送 → 退避/降级
+│   ├── net/PingApi            /api/ping HTTP 封装（复用 net.RetryPolicy）
+│   ├── net/PingAuthBridge     复用时装 FashionAuth 会话（不再单独 challenge/verify）
+│   ├── render/                世界投影 / 边缘箭头 / 标点渲染 / 相机矩阵快照
+│   ├── gui/                   轮盘界面（PingWheelScreen + WheelGeometry）
+│   ├── hud/StatusOverlay      HUD 连接状态角标
+│   ├── command/PingCommand    /vmfashion ping ... 子命令
+│   └── mixin/ping/            中键抑制选取方块 + GUI 提取前抓相机矩阵
 ├── ui/UIState                 ui_state.json（窗口位置 / 上次分类）
 ├── resource/
 │   ├── DefaultPackInstaller   释放内置官方包 + 清理旧版示例包
@@ -94,7 +106,9 @@ com.venus.vmfashion
 6. CosmeticAssets.invalidate()            清上一轮的模型/贴图缓存（此时还没有内容）
 7. SyncService.initialize(config)         纯本地模式 → LocalOnlyProvider；配了后端 → HTTP 全套
 8. AssetSyncService.initialize(config)    资产下发服务（未配置/关闭时整体空转）
-9. 事件注册：JOIN/DISCONNECT、每 tick、命令、快捷键、F3+T 重载、CLIENT_STOPPING
+9. PingService.initialize(config)           注册标点 HUD（世界标点 + 状态角标）
+10. 事件注册：JOIN/DISCONNECT、每 tick、命令、快捷键、F3+T 重载、CLIENT_STOPPING
+    （JOIN/DISCONNECT/tick 同时驱动 SyncService 与 PingService）
 ```
 
 退出时 `saveAll()`：`config.save()` + `LoadoutStore.saveNow()`（衣柜收藏在每次拉取成功时已经原子落盘，退出不用再写）。
@@ -450,3 +464,37 @@ GeckoLib 自己的 `GeoQuad#render` 每个 quad `new Vector4f()` ×4、`GeoCube#
 | 新增后端字段 | `FashionApi` + `HttpLoadoutProvider` / `SyncService` | 契约见后端文档；解析必须容错 |
 | 新增配置项 | `ModConfig`（字段 + getter/setter + `sanitize`） | 有默认值，旧 `config.json` 可直接升级 |
 | 动画控制器 / molang | `render/anim/BedrockAnimations`（当前只按数值解析关键帧） | 支持表达式求值需要引入 molang 求值器；状态隔离已经做好（见 §3.6） |
+
+---
+
+## 10. 标点链路（v2.0 合订版）
+
+```
+按键      鼠标中键（KeyBindings.pingWheel）→ PingWheelScreen（轮盘）→ 选中类型 → 松开
+标点      准星拾取（方块/实体/视线终点）→ PingRelay.sendPing
+            ├─ 本地立刻插入 PingStore（0 延迟渲染）
+            └─ POST /api/ping/rooms/{roomId}/pings（token = 时装会话 token）
+轮询      PingRelay 长轮询 GET /rooms/{roomId}/pings?since=&timeout=
+            → PingStore 合并（按 id 去重 / seq 回退检测 / 时钟校准）
+渲染      HudElementRegistry.addLast → PingRenderer
+            ├─ CameraCapture：GameRendererMixin 在 GUI 提取前抓 view/projection 矩阵
+            ├─ WorldProjector：世界坐标 → 屏幕坐标（在视野内画图标 + 距离 + 名字）
+            └─ EdgeIndicator：视野外画屏幕边缘方向箭头
+认证      PingAuthBridge → SyncService.ensureSession()
+            ├─ 已有未过期时装会话 → 直接复用（进服免握手）
+            └─ 没有 / 401 → FashionAuth.authenticate（challenge → join → verify）
+配置      ModConfig.ping（config.json 的 ping 对象）→ PingSettings
+            ├─ 后端地址：留空 = 由 apiBaseUrl 推导（/api/fashion → /api/ping）
+            └─ 热更新：设置界面完成 / /vmfashion config reload → PingRelay.reload
+```
+
+**降级矩阵**（任何一条不满足都只影响"别人能不能看见"，本地标点始终可用）：
+
+| 条件 | 状态 | 说明 |
+|---|---|---|
+| 标点总开关关闭 | `OFF` | 不显示轮盘、不发标点 |
+| 单机 / 局域网 | `DEGRADED` | 只本地标点（不向中继发请求） |
+| 没配时装后端 / 同步关闭 | `DEGRADED` | 拿不到会话，只本地 |
+| 后端不是 https（非回环） | `DEGRADED` | 拒绝发送凭据 |
+| 后端 5xx / 网络错误 | `DEGRADED` | 退避重试（1s→30s 封顶），恢复后自动上线 |
+| 401 / token 过期 | `AUTHENTICATING` | 清会话 → 重新 ensureSession → 恢复轮询 |

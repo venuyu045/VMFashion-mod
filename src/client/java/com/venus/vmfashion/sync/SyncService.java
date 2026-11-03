@@ -592,6 +592,43 @@ public final class SyncService {
         });
     }
 
+    // ==================== 合订版标点复用（VMPing） ====================
+
+    /**
+     * 确保有一个可用的时装会话，供合订版标点中继复用。
+     *
+     * <p>与 {@link #authenticateAsync(boolean)} 的区别：<b>已有未过期会话时直接返回</b>，
+     * 不会每次进服都重新 challenge/join/verify。标点中继只关心"有没有 token 能用"，
+     * 认证细节仍然全部由 {@link FashionAuth} 负责（包括皮肤站探测、会话落盘、并发去重）。
+     *
+     * @return 会话；同步层未启用 / 后端没配时以 {@code sync_disabled} 失败
+     */
+    public CompletableFuture<FashionAuth.Session> ensureSession() {
+        FashionAuth currentAuth = auth;
+        if (!enabled || currentAuth == null) {
+            return CompletableFuture.failedFuture(new FashionApi.ApiException(-1, "sync_disabled",
+                    "时装同步未启用（未配置后端地址或已在配置里关闭）"));
+        }
+        FashionAuth.Session session = currentAuth.session();
+        if (session != null && !session.expired()) {
+            return CompletableFuture.completedFuture(session);
+        }
+        ModConfig config = currentConfig();
+        return currentAuth.authenticate(config == null ? "" : config.getAuthServer());
+    }
+
+    /**
+     * 丢弃当前会话（标点中继收到 401 后调用；下一次 {@link #ensureSession()} 会重新认证）。
+     *
+     * <p>只清 token 与内存会话，不动穿戴 / 衣柜状态 —— 时装同步层下一次请求会自己再认证。
+     */
+    public void invalidateSession() {
+        FashionAuth currentAuth = auth;
+        if (currentAuth != null) {
+            currentAuth.clearSession();
+        }
+    }
+
     // ==================== 绑定到网站（设备码） ====================
 
     /**

@@ -85,7 +85,7 @@ public final class UiPreview {
         Path workDir = options.outDir().resolve("fixtures");
         adapter.installFixtures(scenario.name(), workDir);
 
-        Screen screen = adapter.createScreen();
+        Screen screen = adapter.createScreen(scenario.name());
         screen.init(options.width(), options.height());
 
         // 6) 场景前置操作（搜索词 / 分类切换 / 切状态）

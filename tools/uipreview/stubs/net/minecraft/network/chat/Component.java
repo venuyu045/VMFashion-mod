@@ -1,5 +1,7 @@
 package net.minecraft.network.chat;
 
+import net.minecraft.ChatFormatting;
+
 import java.util.List;
 import java.util.function.UnaryOperator;
 
@@ -26,6 +28,12 @@ public interface Component extends FormattedText {
     String getString();
 
     MutableComponent withStyle(Style style);
+
+    /** 原版 {@code Component#setStyle(Style)} 的替身（ComponentUtils 合并样式时会调）。 */
+    MutableComponent setStyle(Style style);
+
+    /** 原版 {@code Component#withStyle(ChatFormatting)} 的替身（真实控件构造器会调它）。 */
+    MutableComponent withStyle(ChatFormatting formatting);
 
     MutableComponent withStyle(UnaryOperator<Style> operator);
 
