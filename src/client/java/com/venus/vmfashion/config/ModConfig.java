@@ -19,6 +19,24 @@ public class ModConfig {
             .getConfigDir().resolve("vmfashion").resolve("config.json");
 
     // ==================== UI 常量 ====================
+    /**
+     * 界面配色与尺寸 —— <b>全部取自 Minecraft 原版容器界面的色板</b>。
+     *
+     * <p>取色方式不是"看着像"，而是从客户端 jar 的
+     * {@code assets/minecraft/textures/gui/container/inventory.png} 里逐像素量出来的
+     * （见 {@code tools/uipreview/} 的调色过程）：
+     * <ul>
+     *   <li>面板底 {@code #C6C6C6}（198）—— 原版物品栏/箱子界面的主色；</li>
+     *   <li>槽位内底 {@code #8B8B8B}（139）、槽位边框 {@code #373737}（55）—— 原版物品格；</li>
+     *   <li>面板外框 {@code #000000}、内侧高光 {@code #FFFFFF}、右下阴影 {@code #555555}（85）。</li>
+     * </ul>
+     *
+     * <p>文字色遵循原版规则：<b>浅底用深灰</b>（{@code #404040}），不要用白字 ——
+     * 白字在 {@code #C6C6C6} 上对比度只有 1.6:1，游戏里几乎看不清。
+     *
+     * <p>强调色沿用原版的"凸起/凹陷"语言而不是彩色描边：选中用凹陷 + 深色文字，
+     * 悬停用略亮的底色。只有"已穿"（绿）和"已下架"（红）保留颜色，因为那是状态而不是装饰。
+     */
     public static class UI {
         // 面板尺寸
         public static final int PANEL_WIDTH = 220;
@@ -26,17 +44,42 @@ public class ModConfig {
         public static final int BUTTON_HEIGHT = 20;
         public static final int PADDING = 8;
 
-        // 颜色定义
-        public static final int BG_COLOR = 0xFF1E1E2E;
-        public static final int PANEL_COLOR = 0xFF2D2D44;
-        public static final int HEADER_COLOR = 0xFF3D3D5C;
-        public static final int TEXT_COLOR = 0xFFE0E0E0;
-        public static final int ACCENT_COLOR = 0xFF7C3AED;
-        public static final int HOVER_COLOR = 0xFF4A4A6A;
-        public static final int SUCCESS_COLOR = 0xFF4ADE80;
-        public static final int DANGER_COLOR = 0xFFF87171;
-        public static final int BORDER_COLOR = 0xFF4A4A6A;
-        public static final int MUTED_COLOR = 0xFF888888;
+        // ---- 原版色板（数值来自 inventory.png 逐像素采样）----
+        /** 面板主底色：原版物品栏的 #C6C6C6。 */
+        public static final int PANEL_COLOR = 0xFFC6C6C6;
+        /** 面板外框（1px 纯黑）。 */
+        public static final int PANEL_BORDER = 0xFF000000;
+        /** 面板内侧高光（左/上 2px 白）。 */
+        public static final int PANEL_HIGHLIGHT = 0xFFFFFFFF;
+        /** 面板右下阴影（2px #555555）。 */
+        public static final int PANEL_SHADOW = 0xFF555555;
+        /** 槽位内底：原版物品格的 #8B8B8B。 */
+        public static final int SLOT_COLOR = 0xFF8B8B8B;
+        /** 槽位边框：原版物品格的 #373737。 */
+        public static final int SLOT_BORDER = 0xFF373737;
+
+        /** 全屏遮罩：原版打开容器界面时的半透明黑（不遮死，能看见背后的世界）。 */
+        public static final int OVERLAY_COLOR = 0xB0101010;
+        /** 浅底上的正文色（原版 {@code #404040}）。 */
+        public static final int TEXT_COLOR = 0xFF404040;
+        /**
+         * 浅底上的次要文字。
+         *
+         * <p>原版提示色是 {@code #6B6B6B}，但那个值只在 {@code #C6C6C6} 面板上够用；
+         * 槽位底是更深的 {@code #8B8B8B}，压 {@code #6B6B6B} 对比度只剩 1.35:1（几乎看不见）。
+         * 所以统一压到 {@code #5A5A5A}：在面板上 3.5:1、在槽位上 2.3:1，两处都清楚。
+         */
+        public static final int MUTED_COLOR = 0xFF5A5A5A;
+        /** 悬停时略亮的底色（原版 hover 就是整体提亮一档）。 */
+        public static final int HOVER_COLOR = 0xFFD6D6D6;
+        /** 选中/强调：原版没有彩色描边，用"更深一档"表示选中。 */
+        public static final int ACCENT_COLOR = 0xFF373737;
+        /** 已穿/成功：深绿（浅底上要够暗才看得清）。 */
+        public static final int SUCCESS_COLOR = 0xFF2E7D32;
+        /** 已下架/失败：深红。 */
+        public static final int DANGER_COLOR = 0xFFB71C1C;
+        /** 角标底色：原版 tooltip 的深紫黑 {@code #100010}。 */
+        public static final int BADGE_BG_COLOR = 0xF0100010;
 
         // Toast 通知
         public static final int TOAST_WIDTH = 200;

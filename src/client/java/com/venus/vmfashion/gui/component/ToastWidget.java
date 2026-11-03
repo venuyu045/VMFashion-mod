@@ -222,10 +222,13 @@ public class ToastWidget {
      * Toast 类型枚举
      */
     private enum ToastType {
-        SUCCESS(0xFF4ADE80, 0xFF22C55E, 0xFF166534, "✓"),
-        ERROR(0xFFF87171, 0xFFEF4444, 0xFF7F1D1D, "✗"),
-        WARNING(0xFFFBBF24, 0xFFF59E0B, 0xFF78350F, "⚠"),
-        INFO(0xFF60A5FA, 0xFF3B82F6, 0xFF1E3A5F, "ℹ");
+        // 配色统一到原版 tooltip 的语言：深紫黑底（#100010）+ 亮色文字 + 状态色边框。
+        // 旧版是"每个状态一种彩色底"，压在浅灰的原版面板上会像贴纸；原版的通知
+        // （成就 / 配方解锁）也是深底 + 亮字，靠图标和边框颜色区分状态。
+        SUCCESS(0xFF55FF55, 0xFF55FF55, 0xF0100010, "✓"),
+        ERROR(0xFFFF5555, 0xFFFF5555, 0xF0100010, "✗"),
+        WARNING(0xFFFFAA00, 0xFFFFAA00, 0xF0100010, "!"),
+        INFO(0xFFFFFFFF, 0xFFAAAAAA, 0xF0100010, "i");
 
         private final int textColor;
         private final int borderColor;

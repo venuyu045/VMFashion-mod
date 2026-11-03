@@ -90,11 +90,19 @@ Bedrock 3D 时装（披风 / 翅膀 / 帽子 / 背饰 / 宠物…）穿到玩家
 ./gradlew test                 # 单元测试（纯逻辑，不加载 Minecraft 类）
 bash tools/verify/run.sh       # 无显卡环境的渲染链路自检（7 步）
 bash tools/dev/check-jar.sh    # 构建产物结构检查
+bash tools/uipreview/run.sh --all --report   # 界面预览出图 + 布局自检（无显卡、无客户端）
+bash tools/uipreview/serve.sh  # 可交互界面预览（浏览器里点真实界面）
 ```
 
 `tools/verify/` 用**真实生产代码**烘焙示例模型、把顶点写进记录型 `VertexConsumer`，
 检查包围盒 / 坐标系换算 / attachedBone 跟随 / 缩放原点 / emissive 遮罩 / 动画骨骼名 / 坏模型兜底，
 并用 ASM 校验全部 13 个 mixin 的目标方法签名（详见 `tools/verify/README.md`）。
+
+`tools/uipreview/` 把 `WardrobeScreen` 的**真实绘制代码**跑在没有显卡的 JVM 里：
+`GuiGraphicsExtractor` 换成录制器（MC 26.x 是提取式渲染，绘制只是往渲染状态写命令），
+产出命令列表后用 Java2D 重放成 PNG；点击 / 滚轮 / 打字可以真的喂进 `Screen` 回调。
+布局与逻辑全部由生产代码算，所以**预览图上的坐标就是游戏里会出现的坐标**。
+详见 `tools/uipreview/README.md`，选型过程见 `docs/ui-preview-tooling.md`。
 
 CI（`.github/workflows/build.yml`）在每次 push/PR 上跑：`build`（含测试）→ 渲染自检 →
 语言文件一致性 → jar 结构检查；打 tag 时 `release.yml` 自动发布 jar + sha256 + release notes。

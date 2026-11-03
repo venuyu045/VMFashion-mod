@@ -94,7 +94,14 @@ public final class WardrobeScreen extends Screen {
     private static final int BASE_PREVIEW_WIDTH = 150;
     private static final int BASE_CARD_WIDTH = 64;
     private static final int BASE_CARD_HEIGHT = 74;
-    private static final int BASE_CARD_GAP = 6;
+    /**
+     * 卡片间距。
+     *
+     * <p>从 6 收到 3：原版物品栏的格子是紧密排列的（18×18 格位、格间只有 2px），
+     * 间距一大就变成"一堆独立卡片"，失去物品栏那种成片的格子感。
+     * 收到 3 之后相邻格子的边框只隔 1px 面板色，看起来就是一片格子矩阵。
+     */
+    private static final int BASE_CARD_GAP = 3;
     private static final int BASE_SEARCH_HEIGHT = 16;
 
     /**
@@ -130,10 +137,8 @@ public final class WardrobeScreen extends Screen {
     /** 每帧最多新烘焙多少件时装的资源（模型 + 贴图）。 */
     private static final int MAX_BAKES_PER_FRAME = 2;
 
-    /** 全屏遮罩颜色（0x99 = 60% 不透明）。 */
-    private static final int OVERLAY_COLOR = 0x99000000;
-    /** 缩略图占位底色。 */
-    private static final int THUMB_PLACEHOLDER_COLOR = 0xFF15151F;
+    /** 全屏遮罩：原版容器界面的半透明黑（见 {@link ModConfig.UI#OVERLAY_COLOR}）。 */
+    private static final int OVERLAY_COLOR = ModConfig.UI.OVERLAY_COLOR;
     /** 已穿标记。 */
     private static final String WORN_MARK = "✓";
     private static final String EMPTY_VALUE = "—";
@@ -182,8 +187,24 @@ public final class WardrobeScreen extends Screen {
     private static final String MISSING_MARK = "vmfashion.gui.card.missing";
     /** 已下架卡片悬停时的解释文案。 */
     private static final String MISSING_HINT = "vmfashion.gui.card.missing_hint";
-    /** 角标底色（压在半透明缩略图上，保证文字可读）。 */
-    private static final int BADGE_BG_COLOR = 0xCC000000;
+    /** 角标底色：原版 tooltip 的深紫黑 {@code #100010}（压在半透明缩略图上保证可读）。 */
+    private static final int BADGE_BG_COLOR = ModConfig.UI.BADGE_BG_COLOR;
+    /**
+     * 角标 / 缩略图上叠加的标记文字色。
+     *
+     * <p>这些标记压在<b>深色</b>上（角标底是 {@code #100010}，缩略图本身就是深色贴图），
+     * 所以必须用亮色 —— 面板正文那套深灰（{@code #404040}）在这儿会直接看不见。
+     * 这与原版一致：tooltip 和物品数量叠字都用白/亮色，不会用面板正文色。
+     */
+    private static final int MARK_TEXT_COLOR = 0xFFFFFFFF;
+    /** 角标：警告（未下载）。 */
+    private static final int MARK_WARN_COLOR = 0xFFFFD54F;
+    /** 角标：错误（已下架 / 加载失败）。 */
+    private static final int MARK_DANGER_COLOR = 0xFFFF5555;
+    /** 角标：中性（下载中）。 */
+    private static final int MARK_MUTED_COLOR = 0xFFB0B0B0;
+    /** 角标：已穿（亮绿，叠在深色缩略图上）。 */
+    private static final int MARK_SUCCESS_COLOR = 0xFF55FF55;
 
     /** 打开衣柜时，"收藏多久没刷新才重新拉一次"（毫秒）。 */
     private static final long WARDROBE_REFRESH_INTERVAL_MS = 60_000L;
@@ -601,34 +622,31 @@ public final class WardrobeScreen extends Screen {
     }
 
     private void drawPanel(GuiGraphicsExtractor context, float alpha) {
-        context.fill(panelX, panelY, panelX + panelWidth, panelY + panelHeight,
-                withAlpha(ModConfig.UI.BG_COLOR, alpha));
-        context.fill(panelX, panelY, panelX + panelWidth, panelY + headerHeight,
-                withAlpha(ModConfig.UI.HEADER_COLOR, alpha));
-        // 头部下沿分隔线
-        context.fill(panelX, panelY + headerHeight, panelX + panelWidth, panelY + headerHeight + 1,
-                withAlpha(ModConfig.UI.BORDER_COLOR, alpha));
-        context.outline(panelX, panelY, panelWidth, panelHeight,
-                withAlpha(ModConfig.UI.BORDER_COLOR, alpha));
-        context.text(this.font, this.title, panelX + padding,
+        // 原版容器面板：黑外框 + 左/上白高光 + 右/下深灰阴影 + 四角留空成圆角
+        VanillaStyle.panel(context, panelX, panelY, panelWidth, panelHeight, alpha);
+
+        // 标题：原版容器界面的标题是<b>居中</b>的（"箱子""物品栏"都居中），同色底 + 深灰字
+        drawCentered(context, this.title, panelX + panelWidth / 2,
                 panelY + (headerHeight - this.font.lineHeight) / 2,
-                withAlpha(ModConfig.UI.ACCENT_COLOR, alpha));
+                withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
+
+        // 头部分隔线：原版是「1px 深灰 + 1px 白」的双线（凸起效果），不是单根色条
+        VanillaStyle.separator(context, panelX + 1, panelX + panelWidth - 1,
+                panelY + headerHeight, alpha);
     }
 
     private void drawTabs(GuiGraphicsExtractor context, int mouseX, int mouseY, float alpha) {
         for (TabEntry tab : tabs) {
             boolean active = tab.category() == selectedCategory;
             boolean hovered = isInside(mouseX, mouseY, tab.x(), tab.y(), tab.width(), tab.height());
-            int background = active ? ModConfig.UI.ACCENT_COLOR
+            // 原版语言：选中的 tab 是"按下去"的凹陷，未选中是凸起，悬停整体提亮一档。
+            // 不用彩色描边 —— 原版 GUI 从不用颜色表示选中，只靠明暗。
+            int fill = active ? ModConfig.UI.SLOT_COLOR
                     : (hovered ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.PANEL_COLOR);
-            context.fill(tab.x(), tab.y(), tab.x() + tab.width(), tab.y() + tab.height(),
-                    withAlpha(background, alpha));
-            context.outline(tab.x(), tab.y(), tab.width(), tab.height(),
-                    withAlpha(active ? ModConfig.UI.ACCENT_COLOR : ModConfig.UI.BORDER_COLOR, alpha));
-            int textColor = active ? 0xFFFFFFFF : ModConfig.UI.TEXT_COLOR;
-            context.centeredText(this.font, tab.label(), tab.x() + tab.width() / 2,
+            VanillaStyle.bevel(context, tab.x(), tab.y(), tab.width(), tab.height(), fill, active, alpha);
+            drawCentered(context, tab.label(), tab.x() + tab.width() / 2,
                     tab.y() + (tab.height() - this.font.lineHeight) / 2,
-                    withAlpha(textColor, alpha));
+                    withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
         }
     }
 
@@ -657,6 +675,45 @@ public final class WardrobeScreen extends Screen {
         } finally {
             context.disableScissor();
         }
+        drawScrollBar(context, alpha);
+    }
+
+    /**
+     * 网格滚动条（原版样式）。
+     *
+     * <p>颜色直接取自原版的 {@code widget/scroller.png}（纯 {@code #C0C0C0}）和
+     * {@code widget/scroller_background.png}（纯黑）—— 那两张图本来就是纯色块，
+     * 所以这里用 {@code fill} 画出来的效果和贴图完全一致，不必为了两张 6×32 的纯色图
+     * 去引入 {@code blitSprite} + sprite atlas 的依赖。
+     *
+     * <p>画在网格与预览栏之间的 padding 里（宽度 8，够放 5px），不占卡片的空间，
+     * 也就不会遮住任何一格。
+     */
+    private void drawScrollBar(GuiGraphicsExtractor context, float alpha) {
+        int max = maxScroll();
+        if (max <= 0 || gridHeight <= 8) {
+            // 不需要滚动就不画 —— 原版也是内容放得下时不出滚动条
+            return;
+        }
+        int barWidth = 5;
+        int barX = gridX + gridWidth + Math.max(1, (padding - barWidth) / 2);
+        if (barX + barWidth > panelX + panelWidth - padding) {
+            return;
+        }
+        int trackTop = gridY;
+        int trackHeight = gridHeight;
+        // 轨道（原版 scroller_background 是纯黑）
+        context.fill(barX, trackTop, barX + barWidth, trackTop + trackHeight,
+                withAlpha(0xFF000000, alpha));
+        // 滑块（原版 scroller 是 #C0C0C0），高度按"可见比例"算，最小 8px 保证可点
+        int thumbHeight = Math.max(8, trackHeight * trackHeight / (trackHeight + max));
+        thumbHeight = Math.min(thumbHeight, trackHeight);
+        int travel = trackHeight - thumbHeight;
+        int thumbY = trackTop + (max <= 0 ? 0 : travel * clamp(scroll, 0, max) / max);
+        context.fill(barX, thumbY, barX + barWidth, thumbY + thumbHeight,
+                withAlpha(0xFFC0C0C0, alpha));
+        // 滑块描边（原版滑块有 1px 深色边，否则在黑色轨道上看不出边界）
+        context.outline(barX, thumbY, barWidth, thumbHeight, withAlpha(0xFF555555, alpha));
     }
 
     private void drawEmptyState(GuiGraphicsExtractor context, float alpha) {
@@ -664,8 +721,9 @@ public final class WardrobeScreen extends Screen {
         int textWidth = Math.max(60, gridWidth - 2 * padding);
         int height = this.font.wordWrapHeight(message, textWidth);
         int y = gridY + Math.max(0, (gridHeight - height) / 2);
-        context.textWithWordWrap(this.font, message, gridX + padding, y, textWidth,
-                withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+        // 面板底是 #C6C6C6 浅灰，文字必须无阴影（否则阴影的近黑色会糊成一团脏边）
+        drawWrapped(context, message, gridX + padding, y, textWidth,
+                withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
     }
 
     private void drawCard(GuiGraphicsExtractor context, WardrobeEntry entry,
@@ -675,19 +733,22 @@ public final class WardrobeScreen extends Screen {
         boolean chosen = entry == this.selected;
         boolean missing = entry.missing();
 
-        // 已下架（服务端目录里删了 / 停用了）的卡片要一眼看出"不可用"：
-        // 底色压暗一档 + 名称走弱化色 + 左上角红色「已下架」角标；选中/悬停时仍然高亮，
-        // 否则玩家会以为卡片点不动是界面卡了。
-        int background = missing
-                ? (hovered || chosen ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.BG_COLOR)
-                : ((hovered || chosen) ? ModConfig.UI.HOVER_COLOR : ModConfig.UI.PANEL_COLOR);
-        context.fill(x, y, x + cardWidth, y + cardHeight, withAlpha(background, alpha));
+        // 卡片 = 放大的原版物品格（深灰边框 + 浅灰内底 + 右下白高光）
+        VanillaStyle.slot(context, x, y, cardWidth, cardHeight, alpha);
+        // 悬停 / 选中：内嵌提亮一档（原版 hover 就是整体提亮，不做彩色描边）
+        if (hovered || chosen) {
+            context.fill(x + 1, y + 1, x + cardWidth - 1, y + cardHeight - 1,
+                    withAlpha(ModConfig.UI.HOVER_COLOR, alpha));
+        }
+        // 状态描边只保留三种"必须一眼看出"的：已穿（绿）/ 选中（深灰）/ 已下架（红）
         int border = worn ? ModConfig.UI.SUCCESS_COLOR
                 : (chosen ? ModConfig.UI.ACCENT_COLOR
-                : (missing ? ModConfig.UI.DANGER_COLOR : ModConfig.UI.BORDER_COLOR));
-        context.outline(x, y, cardWidth, cardHeight, withAlpha(border, alpha));
+                : (missing ? ModConfig.UI.DANGER_COLOR : 0));
+        if (border != 0) {
+            context.outline(x, y, cardWidth, cardHeight, withAlpha(border, alpha));
+        }
 
-        // 缩略图：已安装的走 CosmeticAssets 注册好的 Identifier；未安装的没有贴图，只能画占位
+        // 缩略图：已安装的走 CosmeticAssets 注册好的 Identifier；未安装的没有贴图，只画分类名
         int thumbSize = Math.max(8, cardWidth - 2 * CARD_INNER_PADDING);
         int thumbX = x + CARD_INNER_PADDING;
         int thumbY = y + CARD_INNER_PADDING;
@@ -698,13 +759,12 @@ public final class WardrobeScreen extends Screen {
             context.blit(texture, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     0.0f, 0.0f, 1.0f, 1.0f);
         } else {
-            // 未安装 / 加载失败 / 本帧预算用完：占位底色 + 分类名（至少能看出这是哪一类）
-            context.fill(thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
-                    withAlpha(THUMB_PLACEHOLDER_COLOR, alpha));
-            context.centeredText(this.font, categoryLabel(entry.category()),
+            // 未安装 / 加载失败 / 本帧预算用完：<b>不填色</b> —— 原版空物品格就是纯槽位底，
+            // 再叠一层灰反而看不出"这是格子"，整张卡片会糊成一块。只画分类名。
+            drawCentered(context, categoryLabel(entry.category()),
                     thumbX + thumbSize / 2,
                     thumbY + (thumbSize - this.font.lineHeight) / 2,
-                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+                    withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
         }
 
         // 名称（超出卡片宽度就截断）；已下架用弱化色
@@ -712,14 +772,14 @@ public final class WardrobeScreen extends Screen {
                 thumbY + thumbSize + 2, thumbSize,
                 withAlpha(missing ? ModConfig.UI.MUTED_COLOR : ModConfig.UI.TEXT_COLOR, alpha));
 
-        // 状态角标（左上角）
+        // 状态角标（左上角）—— 角标底是深紫黑，所以文字一律用亮色（见 MARK_* 常量）
         if (missing) {
             // 已下架优先级最高：它既不"未下载"也不"下载中"（后端一定会拒绝下发），
             // 所以绝不能被下面两个分支的文案盖掉。
             int reserved = worn ? this.font.width(WORN_MARK) + 4 : 0;
             drawCornerBadge(context, Component.translatable(MISSING_MARK),
                     x + 2, y + 2, Math.max(0, cardWidth - 4 - reserved),
-                    ModConfig.UI.DANGER_COLOR, alpha);
+                    MARK_DANGER_COLOR, alpha);
             if (hovered) {
                 // 悬停时补一句解释（原版 widget 也是在这个阶段排队 tooltip 的）
                 context.setTooltipForNextFrame(Component.translatable(MISSING_HINT), mouseX, mouseY);
@@ -731,20 +791,68 @@ public final class WardrobeScreen extends Screen {
             drawCornerBadge(context,
                     Component.translatable(downloading ? DOWNLOADING_MARK : NOT_INSTALLED_MARK),
                     x + 2, y + 2, Math.max(0, cardWidth - 4 - reserved),
-                    downloading ? ModConfig.UI.MUTED_COLOR : ModConfig.UI.ACCENT_COLOR, alpha);
+                    downloading ? MARK_MUTED_COLOR : MARK_WARN_COLOR, alpha);
         } else if (thumbFailures.containsKey(entry.id())) {
             context.text(this.font, FAILED_MARK, x + 3, y + 3,
-                    withAlpha(ModConfig.UI.DANGER_COLOR, alpha));
+                    withAlpha(MARK_DANGER_COLOR, alpha));
         } else if (isPackPending(packIdOf(entry))) {
             context.text(this.font, PENDING_MARK, x + 3, y + 3,
-                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+                    withAlpha(MARK_MUTED_COLOR, alpha));
         }
 
         // 已穿标记（右上角）
         if (worn) {
             context.text(this.font, WORN_MARK,
                     x + cardWidth - this.font.width(WORN_MARK) - 3, y + 3,
-                    withAlpha(ModConfig.UI.SUCCESS_COLOR, alpha));
+                    withAlpha(MARK_SUCCESS_COLOR, alpha));
+        }
+    }
+
+    /**
+     * 居中画一行文字（<b>不带阴影</b>）。
+     *
+     * <p>为什么不直接用 {@code context.centeredText}：原版那个重载固定带阴影，
+     * 而阴影色是"颜色除以 4"，{@code #404040} 的阴影接近纯黑 —— 压在 {@code #C6C6C6}
+     * 浅灰面板上会糊成一团脏边。原版自己在浅色容器底上写字时也是<b>不带阴影</b>的。
+     */
+    private void drawCentered(GuiGraphicsExtractor context, Component text, int centerX, int y, int color) {
+        String plain = text.getString();
+        context.text(this.font, plain, centerX - this.font.width(plain) / 2, y, color, false);
+    }
+
+    /**
+     * 按宽度折行画多行文字（<b>不带阴影</b>，理由同 {@link #drawCentered}）。
+     *
+     * <p><b>断行规则</b>：先用 {@code Font#plainSubstrByWidth} 取"放得下的最长前缀"，
+     * 然后<b>往回退到最后一个空格</b>再断 —— 英文按词断行（否则会出现
+     * {@code "middl" / "e to see..."} 这种把单词劈开的断法，中文没空格自然退化成按字符断，
+     * 与原版 {@code StringSplitter#splitLines} 的行为一致）。
+     *
+     * <p>一个字符都放不下时至少前进一格，避免死循环。
+     */
+    private void drawWrapped(GuiGraphicsExtractor context, Component message,
+                             int x, int y, int maxWidth, int color) {
+        String plain = message.getString();
+        if (plain.isEmpty() || maxWidth <= 0) {
+            return;
+        }
+        int lineY = y;
+        int start = 0;
+        while (start < plain.length()) {
+            String rest = plain.substring(start);
+            int fit = this.font.plainSubstrByWidth(rest, maxWidth).length();
+            if (fit <= 0) {
+                fit = 1;
+            } else if (fit < rest.length()) {
+                // 本行没吃完整段：优先断在最后一个空格之后（英文按词断行）
+                int lastSpace = rest.lastIndexOf(' ', fit - 1);
+                if (lastSpace > 0) {
+                    fit = lastSpace + 1;
+                }
+            }
+            context.text(this.font, plain.substring(start, start + fit), x, lineY, color, false);
+            lineY += LINE_HEIGHT;
+            start += fit;
         }
     }
 
@@ -794,32 +902,46 @@ public final class WardrobeScreen extends Screen {
         int right = panelX + panelWidth - padding;
         int top = contentTop;
         int bottom = contentBottom - buttonHeight - padding;
-        context.fill(left, top, right, bottom, withAlpha(ModConfig.UI.PANEL_COLOR, alpha));
-        context.outline(left, top, previewWidth, Math.max(0, bottom - top),
-                withAlpha(ModConfig.UI.BORDER_COLOR, alpha));
+        // 预览区做成原版的"凹陷面板"：左上暗边 + 右下白边 + 槽位色底
+        context.fill(left, top, right, bottom, withAlpha(ModConfig.UI.SLOT_COLOR, alpha));
+        int insetHeight = Math.max(0, bottom - top);
+        if (insetHeight > 0) {
+            context.fill(left, top, right, top + 1, withAlpha(ModConfig.UI.PANEL_SHADOW, alpha));
+            context.fill(left, top, left + 1, bottom, withAlpha(ModConfig.UI.PANEL_SHADOW, alpha));
+            context.fill(left, bottom - 1, right, bottom, withAlpha(ModConfig.UI.PANEL_HIGHLIGHT, alpha));
+            context.fill(right - 1, top, right, bottom, withAlpha(ModConfig.UI.PANEL_HIGHLIGHT, alpha));
+        }
 
         WardrobeEntry entry = this.selected;
         if (entry == null) {
-            context.textWithWordWrap(this.font, Component.translatable("vmfashion.gui.preview.hint"),
-                    left + padding, top + padding, Math.max(40, previewWidth - 2 * padding),
-                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+            // 未选中：画一个空的物品格 + 提示文字。
+            // 原版界面里不会出现"一整片没有格子的空白"，空区域也是格子 —— 这样预览栏
+            // 在未选中时看起来仍然像容器界面的一部分，而不是漏画了一块。
+            int boxSize = Math.min(64, Math.max(24, previewWidth - 2 * padding));
+            int boxX = left + (previewWidth - boxSize) / 2;
+            int boxY = top + padding;
+            VanillaStyle.slot(context, boxX, boxY, boxSize, boxSize, alpha);
+            drawWrapped(context, Component.translatable("vmfashion.gui.preview.hint"),
+                    left + padding, boxY + boxSize + padding,
+                    Math.max(40, previewWidth - 2 * padding),
+                    withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
             return;
         }
 
         int thumbSize = Math.max(16, Math.min(PREVIEW_THUMB_MAX, previewWidth - 2 * padding));
         int thumbX = left + (previewWidth - thumbSize) / 2;
         int thumbY = top + padding;
+        // 缩略图放在原版物品格里（和中间网格的卡片同一套语言）
+        VanillaStyle.slot(context, thumbX - 1, thumbY - 1, thumbSize + 2, thumbSize + 2, alpha);
         Identifier texture = entry.installed() ? thumbnailFor(entry.definition()) : null;
         if (texture != null) {
             context.blit(texture, thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
                     0.0f, 0.0f, 1.0f, 1.0f);
         } else {
-            // 未安装（或缩略图失败）：占位图 + 分类名，右侧信息仍然完整
-            context.fill(thumbX, thumbY, thumbX + thumbSize, thumbY + thumbSize,
-                    withAlpha(THUMB_PLACEHOLDER_COLOR, alpha));
-            context.centeredText(this.font, categoryLabel(entry.category()),
+            // 未安装（或缩略图失败）：不填色，只画分类名（理由同卡片占位）
+            drawCentered(context, categoryLabel(entry.category()),
                     thumbX + thumbSize / 2, thumbY + (thumbSize - this.font.lineHeight) / 2,
-                    withAlpha(ModConfig.UI.MUTED_COLOR, alpha));
+                    withAlpha(ModConfig.UI.TEXT_COLOR, alpha));
         }
 
         int textX = left + padding;
@@ -839,12 +961,12 @@ public final class WardrobeScreen extends Screen {
                     textX, y, textWidth, alpha);
             // 已下架优先：不能再显示"穿上后会自动下载"——后端根本不会再下发这件时装
             boolean missing = entry.missing();
-            context.textWithWordWrap(this.font,
+            drawWrapped(context,
                     Component.translatable(missing
                             ? "vmfashion.gui.preview.missing"
                             : "vmfashion.gui.preview.not_installed"),
                     textX, y + 2, textWidth,
-                    withAlpha(missing ? ModConfig.UI.DANGER_COLOR : ModConfig.UI.ACCENT_COLOR, alpha));
+                    withAlpha(missing ? ModConfig.UI.DANGER_COLOR : ModConfig.UI.TEXT_COLOR, alpha));
             return;
         }
         y = drawLabelValue(context, "vmfashion.gui.preview.bone", definition.attachedBone(),
@@ -855,7 +977,7 @@ public final class WardrobeScreen extends Screen {
                 textX, y, textWidth, alpha);
         if (entry.missing()) {
             // 已安装但已下架：预览里必须说明"不能穿"，否则玩家只会看到一堆正常信息
-            context.textWithWordWrap(this.font, Component.translatable("vmfashion.gui.preview.missing"),
+            drawWrapped(context, Component.translatable("vmfashion.gui.preview.missing"),
                     textX, y + 2, textWidth, withAlpha(ModConfig.UI.DANGER_COLOR, alpha));
         }
     }
@@ -868,8 +990,8 @@ public final class WardrobeScreen extends Screen {
         int top = panelY + panelHeight - footerHeight;
         context.fill(panelX, top, panelX + panelWidth, panelY + panelHeight,
                 withAlpha(ModConfig.UI.PANEL_COLOR, alpha));
-        context.fill(panelX, top, panelX + panelWidth, top + 1,
-                withAlpha(ModConfig.UI.BORDER_COLOR, alpha));
+        // 底栏分隔线：原版「1px 深灰 + 1px 白」的双线，比单根色条更像原版
+        VanillaStyle.separator(context, panelX + 1, panelX + panelWidth - 1, top, alpha);
 
         int textX = panelX + padding;
         int maxWidth = Math.max(40, panelWidth - 2 * padding);
@@ -1562,7 +1684,7 @@ public final class WardrobeScreen extends Screen {
         String shown = this.font.width(text) <= maxWidth
                 ? text
                 : this.font.plainSubstrByWidth(text, Math.max(1, maxWidth - this.font.width("…"))) + "…";
-        context.text(this.font, shown, x, y, color);
+        context.text(this.font, shown, x, y, color, false);
     }
 
     private void drawCenteredTruncated(GuiGraphicsExtractor context, String text, int centerX, int y,
@@ -1573,7 +1695,7 @@ public final class WardrobeScreen extends Screen {
         String shown = this.font.width(text) <= maxWidth
                 ? text
                 : this.font.plainSubstrByWidth(text, Math.max(1, maxWidth - this.font.width("…"))) + "…";
-        context.text(this.font, shown, centerX - this.font.width(shown) / 2, y, color);
+        context.text(this.font, shown, centerX - this.font.width(shown) / 2, y, color, false);
     }
 
     /**

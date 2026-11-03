@@ -1,0 +1,279 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>UI 预览器</title>
+<style>
+  :root {
+    --bg: #14141c;
+    --panel: #1e1e2e;
+    --border: #3d3d5c;
+    --text: #e0e0e0;
+    --muted: #888888;
+    --accent: #7c3aed;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.5 -apple-system, "Segoe UI", "Noto Sans CJK SC", sans-serif;
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 14px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+  header h1 {
+    font-size: 14px;
+    margin: 0 8px 0 0;
+    color: var(--accent);
+    font-weight: 600;
+  }
+  select, button {
+    background: #2d2d44;
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover, select:hover { background: #3d3d5c; }
+  #status {
+    margin-left: auto;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+    font-size: 12px;
+  }
+  main {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: auto;
+    padding: 16px;
+    background:
+      repeating-conic-gradient(#1a1a24 0% 25%, #14141c 0% 50%) 50% / 24px 24px;
+  }
+  #stage {
+    position: relative;
+    line-height: 0;
+    box-shadow: 0 8px 40px rgba(0,0,0,.6);
+    border: 1px solid var(--border);
+    cursor: crosshair;
+  }
+  #frame {
+    display: block;
+    image-rendering: pixelated;
+    max-width: 100%;
+    max-height: calc(100vh - 160px);
+  }
+  footer {
+    padding: 6px 14px;
+    background: var(--panel);
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 12px;
+  }
+  kbd {
+    background: #2d2d44;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 0 4px;
+    font-size: 11px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">UI 预览器</h1>
+  <label>场景
+    <select id="scenario"></select>
+  </label>
+  <button id="reset">重置场景</button>
+  <button id="focusSearch">聚焦搜索框</button>
+  <span id="status">加载中…</span>
+</header>
+<main>
+  <div id="stage">
+    <img id="frame" alt="界面预览" draggable="false">
+  </div>
+</main>
+<footer>
+  点击 = 游戏内点击 · 滚轮 = 列表滚动 · 直接打字 = 搜索框输入（先点一下搜索框）·
+  <kbd>Backspace</kbd> 删除 · 坐标按逻辑像素换算，与游戏内一致
+</footer>
+
+<script>
+(() => {
+  const frame = document.getElementById('frame');
+  const status = document.getElementById('status');
+  const scenario = document.getElementById('scenario');
+  const stage = document.getElementById('stage');
+
+  let logicalWidth = 640;
+  let logicalHeight = 360;
+  let busy = false;
+  let pendingMove = null;
+  let moveTimer = null;
+  let currentUrl = null;
+
+  function setImage(blob) {
+    if (currentUrl) URL.revokeObjectURL(currentUrl);
+    currentUrl = URL.createObjectURL(blob);
+    frame.src = currentUrl;
+  }
+
+  async function fetchFrame(url) {
+    const response = await fetch(url, { cache: 'no-store' });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    setImage(await response.blob());
+  }
+
+  async function postEvent(params) {
+    if (busy) return;
+    busy = true;
+    try {
+      const query = new URLSearchParams(params).toString();
+      await fetchFrame('/event?' + query);
+    } catch (e) {
+      status.textContent = '事件失败: ' + e.message;
+    } finally {
+      busy = false;
+    }
+  }
+
+  let scenariosLoaded = false;
+
+  async function refreshInfo() {
+    try {
+      const info = await (await fetch('/info', { cache: 'no-store' })).json();
+      logicalWidth = info.width;
+      logicalHeight = info.height;
+      status.textContent =
+        `${info.title} · ${info.width}×${info.height} 逻辑 · ×${info.scale} 放大 · ` +
+        `${info.commands} 条绘制命令 · 字体 ${info.fallbackFont}` +
+        (info.issues && info.issues.length ? ` · ⚠ ${info.issues.length} 条布局告警` : '');
+      document.getElementById('title').textContent = info.title;
+      document.title = info.title;
+      // 场景列表由适配器提供，换项目时网页不用改
+      if (!scenariosLoaded && info.scenarios) {
+        scenariosLoaded = true;
+        const selected = scenario.value;
+        scenario.innerHTML = '';
+        for (const [name, label] of Object.entries(info.scenarios)) {
+          const option = document.createElement('option');
+          option.value = name;
+          option.textContent = label;
+          scenario.appendChild(option);
+        }
+        if (selected) scenario.value = selected;
+      }
+    } catch (e) {
+      status.textContent = '状态读取失败: ' + e.message;
+    }
+  }
+
+  function toLogical(event) {
+    const rect = frame.getBoundingClientRect();
+    return {
+      x: Math.round((event.clientX - rect.left) / rect.width * logicalWidth),
+      y: Math.round((event.clientY - rect.top) / rect.height * logicalHeight)
+    };
+  }
+
+  // ---- 鼠标 ----
+  stage.addEventListener('mousemove', (event) => {
+    const p = toLogical(event);
+    pendingMove = p;
+    if (moveTimer) return;
+    moveTimer = setTimeout(() => {
+      moveTimer = null;
+      if (pendingMove) {
+        const target = pendingMove;
+        pendingMove = null;
+        postEvent({ type: 'move', x: target.x, y: target.y });
+      }
+    }, 50);
+  });
+
+  stage.addEventListener('mousedown', async (event) => {
+    event.preventDefault();
+    const p = toLogical(event);
+    // 浏览器 MouseEvent.button 是 0-based（左 0 / 中 1 / 右 2）；
+    // MC 26.3 用 SDL3，是 1-based（左 1 / 中 2 / 右 3）→ 加 1
+    const button = event.button + 1;
+    await postEvent({ type: 'click', x: p.x, y: p.y, button });
+    // 补一个松开：很多界面把"没拖动就当点击"的逻辑放在 mouseReleased 里
+    await postEvent({ type: 'release', x: p.x, y: p.y, button });
+    // 让画布获得焦点，键盘事件才能进来
+    window.focus();
+  });
+
+  stage.addEventListener('contextmenu', (event) => event.preventDefault());
+
+  stage.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const p = toLogical(event);
+    // 浏览器 wheel：向下滚是正 deltaY；游戏内 mouseScrolled 向下是负值
+    const delta = event.deltaY > 0 ? -1 : 1;
+    postEvent({ type: 'scroll', x: p.x, y: p.y, delta });
+  }, { passive: false });
+
+  // ---- 键盘 ----
+  window.addEventListener('keydown', async (event) => {
+    // 搜索框里退格/删除要发给 EditBox
+    if (event.key === 'Backspace' || event.key === 'Delete'
+        || event.key === 'ArrowLeft' || event.key === 'ArrowRight'
+        || event.key === 'Home' || event.key === 'End') {
+      event.preventDefault();
+      const codes = {
+        Backspace: 259, Delete: 261, ArrowLeft: 263,
+        ArrowRight: 262, Home: 268, End: 269
+      };
+      postEvent({ type: 'key', code: codes[event.key] });
+      return;
+    }
+    // 可打印字符：取第一个码位（支持中文输入法直接出字）
+    if (event.key.length >= 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      const cp = event.key.codePointAt(0);
+      if (cp >= 32) {
+        event.preventDefault();
+        postEvent({ type: 'char', cp });
+      }
+    }
+  });
+
+  // ---- 工具条 ----
+  document.getElementById('reset').addEventListener('click', async () => {
+    await fetch('/reset?scenario=' + encodeURIComponent(scenario.value));
+    await fetchFrame('/frame.png');
+    await refreshInfo();
+  });
+
+  scenario.addEventListener('change', () => {
+    document.getElementById('reset').click();
+  });
+
+  document.getElementById('focusSearch').addEventListener('click', async () => {
+    // 搜索框在界面顶部偏左：点它的中心（坐标按布局比例算，布局改了这里也跟着大致对）
+    postEvent({ type: 'click', x: Math.round(logicalWidth * 0.42), y: Math.round(logicalHeight * 0.19), button: 1 });
+  });
+
+  // ---- 启动 ----
+  (async () => {
+    await fetchFrame('/frame.png');
+    await refreshInfo();
+  })();
+})();
+</script>
+</body>
+</html>

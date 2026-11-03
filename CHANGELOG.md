@@ -3,6 +3,88 @@
 本文件格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 计划中
+
+- 官方签名公钥接入（后端生成密钥对 → 替换内置常量 → 官方后端开 `requireSignature`）
+- 内容审核流 / 举报 / 下架（后端）
+- 后端多 worker（Redis 或粘性会话）
+- 衣柜键盘导航（本轮已给方案，见 `research/audit-v1.2/mod-fixes.md` §3）
+
+### 新增（开发工具）
+
+- **`tools/uipreview/` 改造成可跨项目复用**。原来它把 `WardrobeScreen`、`Fixtures`、
+  场景表全硬编码在内核里，换一个 mod 就得改内核代码。现在分成两层：
+  - **内核**（`stubs/` + `harness/` + `web/` + `assets/`）：不认识任何项目类，
+    只通过 `UiPreviewAdapter` 接口问"预览哪个界面、造什么数据、有哪些场景"；
+  - **适配层**（`app/` + `fake/`）：唯一知道项目类名的地方。
+  移植五步见 `tools/uipreview/PORTING.md`（已在 VMTools 项目上实测跑通）。
+  顺带补上的通用能力：
+  - `--all` 改为遍历适配器声明的场景（脚本不再硬编码场景名）；
+  - 支持**一个 mod 多个界面**（`createScreen(scenario)`，`--scenario=settings` 能预览设置界面）；
+  - 交互事件补 `release`（很多界面把"没拖动就当点击"放在 `mouseReleased` 里）；
+  - 渲染器支持 `§0`–`§f` 原版颜色码（原来会原样画出 `§a开启`）；
+  - 新增 `FabricLoader` 替身（把配置目录指到可写临时目录），
+    让那些直接用 `FabricLoader.getInstance().getConfigDir()` 的类能跑通；
+  - `/info` 返回 `title` / `scenarios` / `state`，网页的场景下拉框改为动态填充。
+
+### 变更（界面）
+
+- **游戏内衣柜改成 Minecraft 原版容器界面风格**（物品栏 / 箱子那种），不再是自绘的深紫配色。
+  配色不是"看着像"，而是从客户端 jar 的
+  `assets/minecraft/textures/gui/container/inventory.png` 里**逐像素量出来**的：
+  面板底 `#C6C6C6`、槽位内底 `#8B8B8B`、槽位边框 `#373737`、面板阴影 `#555555`。
+  - **面板**：1px 纯黑外框 + 左/上 2px 纯白高光 + 右/下 2px 深灰阴影 + 四角各留 1px
+    （原版那种"像素圆角"）。标题改为居中 —— 原版容器标题都是居中的。
+  - **分类 tab**：改用原版的「凸起 / 凹陷」语言。选中的 tab 是"按下去"的凹陷，
+    未选中是凸起，悬停整体提亮一档。**不再用紫色描边** —— 原版 GUI 从不用颜色表示选中，只靠明暗。
+  - **时装卡片**：做成放大的原版物品格（深灰边框 + 浅灰内底 + 右/底内侧 1px 白）。
+    格子间距从 6 收到 3，相邻格只隔 1px 面板色，看起来是一片格子矩阵而不是一堆独立卡片。
+    空槽位不再填色（原版空物品格就是纯槽位底，再叠一层灰反而糊成一块）。
+  - **预览栏**：做成原版"凹陷面板"；未选中时画一个空物品格 + 提示，而不是一片空白。
+  - **滚动条**：网格内容超出时出现原版滚动条（黑色轨道 + `#C0C0C0` 滑块 + 1px 描边），
+    画在网格与预览栏之间的 padding 里，不占卡片空间。配色取自原版
+    `widget/scroller.png` / `scroller_background.png`（那两张本来就是纯色块，用 `fill` 画等价）。
+  - **文字**：浅色底上一律**不带阴影**。原版阴影色是"颜色除以 4"，`#404040` 的阴影接近纯黑，
+    压在 `#C6C6C6` 上会糊成一团脏边 —— 这是改造过程中最影响观感的一处。
+    顺带把 `centeredText` / `textWithWordWrap` 换成自实现的 `drawCentered` / `drawWrapped`，
+    因为原版这两个重载固定带阴影、没有 `shadow = false` 的版本。
+  - **按钮 / 输入框**：本来就是原版精灵图（`widget/button.png`、`widget/text_field.png` 九宫格），保持不变。
+  - **Toast**：从"每个状态一种彩色底"改成原版 tooltip 语言（深紫黑底 `#100010` + 亮色文字 +
+    状态色边框），压在浅灰面板上不再像贴纸。
+  - **确认框**（`ConfirmScreen`）同步改造，配色和画法与衣柜统一。
+- **新增 `gui/VanillaStyle`**：把原版绘制原语（面板 / 物品格 / 凸起凹陷 / 双线分隔）抽成一处，
+  衣柜与确认框共用。各写一份必然会漂移 —— 改了一处忘了另一处，界面就会"一半像原版、一半不像"。
+- **`ModConfig.UI` 重新定义为原版色板**，并删掉 4 个改造后已无引用的常量
+  （`BG_COLOR` / `HEADER_COLOR` / `BORDER_COLOR` / `INSET_COLOR`）——
+  项目路线图把"死字段"列为要清理的问题，不留着当摆设。
+- **副产物**：上面这些改动全部在 `tools/uipreview/` 里逐帧验证过（8 个场景 + 布局自检 +
+  浏览器交互），预览器本身没改一行就能用来做这次 UI 重构。
+
+### 新增（开发工具）
+
+- **`tools/uipreview/`：无头 UI 预览器 —— 不用显卡、不用启动游戏就能看界面，而且能在浏览器里真的点。**
+  背景：开发机无 X / 无 libGL / cgroup 1.2GB，起不了客户端；查遍现有工具（详见
+  `docs/ui-preview-tooling.md`）发现**没有任何现成方案**能同时满足「不启动客户端 + 预览任意
+  Screen + 可交互」—— 官方的 Fabric Client GameTest 要真客户端（差 7GB 内存），
+  hud designer / Universal Preview / GUI Inspector 之类只管 HUD、3D 模型或必须真机。
+  实现方式：MC 26.x 是提取式渲染，`GuiGraphicsExtractor` 只往渲染状态写命令、不碰 GL，
+  于是把它换成录制器（`stubs/net/minecraft/client/gui/GuiGraphicsExtractor.java`），
+  产出 `DrawCommand` 列表后用 Java2D 重放成 PNG。**`WardrobeScreen` 一行未改**，
+  布局与逻辑全部由生产代码计算，所以预览图上的坐标就是游戏里会出现的坐标。
+
+  - `bash tools/uipreview/run.sh --all --report`：8 个场景各出一张 PNG + 布局自检
+    （越界 / 零尺寸 / 文字出屏 / 空帧）。
+  - `bash tools/uipreview/serve.sh`：起交互服务，浏览器里点击 / 滚轮 / 打字全部喂进真实的
+    `Screen#mouseClicked` / `mouseScrolled` / `charTyped`，改完代码刷新页面即可看新布局；
+    `GET /info` 返回界面算出来的真实布局坐标（面板 / 网格 / 每个 tab / 每个按钮），供脚本定位元素。
+  - 字宽逐字符取自游戏内 `ascii.png`（`gen-mc-font.py` 生成 `McAsciiFont`），
+    中文按 unifont 的 9px 步进；按钮 / 输入框用客户端 jar 里原样的九宫格精灵图。
+  - 过程中核对出三处「猜错就会让预览骗人」的语义：`outline` 参数是 `(x,y,w,h)` 而不是
+    `(x0,y0,x1,y1)`；鼠标左键编号是 SDL3 的 **1** 而不是 GLFW 的 0；`text` 的颜色会被
+    `Component` 自带样式覆盖。详见 `tools/uipreview/README.md`「踩过的坑」。
+
 ## [1.3.1] - 2026-11-02
 
 修复版。1.3.0 把游戏内衣柜改成「网站收藏」之后，第 6 轮独立审查（mod 两路 + 网站前后端三路，
@@ -149,15 +231,6 @@
   走站点管理端 API 上传包 + 缩略图 + 目录条目，并回读校验 sha256 / 字节数。
 - **模型生成脚本 `tools/dev/gen_dragon_wings.py`**：龙翼几何 / 贴图 / 发光层 / 动画全部由脚本
   参数化生成（左右镜像、角度符号换算都在脚本里），改一个参数就能重出整套资源。
-
-## [Unreleased]
-
-### 计划中
-
-- 官方签名公钥接入（后端生成密钥对 → 替换内置常量 → 官方后端开 `requireSignature`）
-- 内容审核流 / 举报 / 下架（后端）
-- 后端多 worker（Redis 或粘性会话）
-- 衣柜键盘导航（本轮已给方案，见 `research/audit-v1.2/mod-fixes.md` §3）
 
 ## [1.2.0] - 2026-10-31
 

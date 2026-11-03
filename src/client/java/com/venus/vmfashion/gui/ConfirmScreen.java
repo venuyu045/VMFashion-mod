@@ -1,5 +1,6 @@
 package com.venus.vmfashion.gui;
 
+import com.venus.vmfashion.config.ModConfig;
 import com.venus.vmfashion.gui.component.ToastWidget;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -17,11 +18,8 @@ public class ConfirmScreen extends Screen {
     private static final int PANEL_WIDTH = 220;
     private static final int PANEL_HEIGHT = 100;
 
-    // 颜色
-    private static final int PANEL_COLOR = 0xFF2D2D44;
-    private static final int HEADER_COLOR = 0xFF3D3D5C;
-    private static final int TEXT_COLOR = 0xFFE0E0E0;
-    private static final int DANGER_COLOR = 0xFFF87171;
+    // 配色统一走 ModConfig.UI 的原版色板（与衣柜界面同一套，避免两块界面风格漂移）
+    private static final int HEADER_HEIGHT = 26;
 
     private final Screen parent;
     private final Component title;
@@ -86,23 +84,25 @@ public class ConfirmScreen extends Screen {
 
     @Override
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float delta) {
-        // 半透明背景
-        context.fill(0, 0, this.width, this.height, 0x80000000);
+        // 半透明遮罩：与衣柜同一档（原版容器界面的遮罩，不遮死，能看见背后的世界）
+        context.fill(0, 0, this.width, this.height, ModConfig.UI.OVERLAY_COLOR);
 
         int centerX = this.width / 2;
         int centerY = this.height / 2;
         int panelX = centerX - PANEL_WIDTH / 2;
         int panelY = centerY - PANEL_HEIGHT / 2;
 
-        // 面板背景
-        fillRoundedRect(context, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, PANEL_COLOR);
+        // 原版容器面板（黑外框 + 白高光 + 深灰阴影 + 像素圆角）
+        VanillaStyle.panel(context, panelX, panelY, PANEL_WIDTH, PANEL_HEIGHT, 1.0f);
 
-        // 头部
-        fillRoundedRect(context, panelX, panelY, PANEL_WIDTH, 25, HEADER_COLOR);
-        drawCenteredText(context, title, centerX, panelY + 7, DANGER_COLOR);
+        // 头部分隔线（原版「1px 深灰 + 1px 白」双线），标题居中
+        VanillaStyle.separator(context, panelX + 1, panelX + PANEL_WIDTH - 1,
+                panelY + HEADER_HEIGHT, 1.0f);
+        drawCenteredText(context, title, centerX,
+                panelY + (HEADER_HEIGHT - this.font.lineHeight) / 2, ModConfig.UI.TEXT_COLOR);
 
-        // 消息
-        drawCenteredText(context, message, centerX, panelY + 45, TEXT_COLOR);
+        // 消息：危险操作的说明用深红，普通说明用正文色
+        drawCenteredText(context, message, centerX, panelY + 45, ModConfig.UI.DANGER_COLOR);
 
         super.extractRenderState(context, mouseX, mouseY, delta);
 
@@ -122,15 +122,17 @@ public class ConfirmScreen extends Screen {
         return super.mouseClicked(event, doubleClick);
     }
 
-    // 绘制工具
-    private void fillRoundedRect(GuiGraphicsExtractor context, int x, int y, int width, int height, int color) {
-        context.fill(x + 2, y, x + width - 2, y + height, color);
-        context.fill(x, y + 2, x + width, y + height - 2, color);
-    }
 
-    /** 居中画一行可翻译文案（26.3 的 centeredText 签名：font, Component, centerX, y, color）。 */
+    /**
+     * 居中画一行可翻译文案（<b>不带阴影</b>）。
+     *
+     * <p>不用 {@code context.centeredText}：那个重载固定带阴影，阴影色是"颜色除以 4"，
+     * 深灰文字的阴影接近纯黑，压在 {@code #C6C6C6} 浅灰面板上会糊成脏边。
+     * 原版在浅色容器底上写字时同样不带阴影。
+     */
     private void drawCenteredText(GuiGraphicsExtractor context, Component text, int centerX, int y, int color) {
-        context.centeredText(this.font, text, centerX, y, color);
+        String plain = text.getString();
+        context.text(this.font, plain, centerX - this.font.width(plain) / 2, y, color, false);
     }
 
     @Override
