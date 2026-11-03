@@ -274,5 +274,6 @@
   "vmfashion.ping.settings.section.advanced": "Advanced",
   "vmfashion.ping.settings.section.network": "Network",
   "vmfashion.ping.settings.api_url.effective": "Effective backend: %s",
-  "vmfashion.ping.settings.api_url.local_only": "Effective backend: local-only (no fashion backend configured)"
+  "vmfashion.ping.settings.api_url.local_only": "Effective backend: local-only (no fashion backend configured)",
+  "vmfashion.ping.status.singleplayer": "Singleplayer/LAN: pings are visible to you only"
 }

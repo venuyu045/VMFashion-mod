@@ -53,6 +53,8 @@ public final class PingService {
     private boolean hudRegistered;
     /** "检测到独立 VMPing"的提示只发一次，避免每次 tick 刷屏。 */
     private boolean standaloneWarningSent;
+    /** 是否装了独立 VMPing（初始化时查一次；tick 里每帧查 FabricLoader 没必要）。 */
+    private boolean standaloneVmpingPresent;
 
     private PingService() {
     }
@@ -84,6 +86,11 @@ public final class PingService {
      */
     public void initialize(ModConfig activeConfig) {
         this.config = activeConfig;
+        this.standaloneVmpingPresent = standaloneVmpingInstalled();
+        if (standaloneVmpingPresent) {
+            VMFashionClient.LOGGER.warn("检测到独立 VMPing 模组：标点功能已内置在 VMFashion，"
+                    + "同时安装会重复注册快捷键与 HUD，建议移除 vmping-*.jar");
+        }
         registerHud();
     }
 
@@ -147,12 +154,18 @@ public final class PingService {
             return;
         }
         PingSettings settings = current.getPing();
-        if (!relay.isStarted() && settings.isEnabled()
-                && Minecraft.getInstance().player != null
-                && !ClientContext.roomId().isBlank()) {
-            relay.start(settings);
+        try {
+            if (!relay.isStarted() && settings.isEnabled()
+                    && Minecraft.getInstance().player != null
+                    && !ClientContext.roomId().isBlank()) {
+                relay.start(settings);
+            }
+            relay.tick();
+        } catch (Throwable t) {
+            // tick 在客户端主循环里跑：任何异常抛出去都会让游戏崩（Fabric 不吞监听器异常）。
+            // 标点只是附属功能，出错最多这一 tick 不更新，下一 tick 继续。
+            VMFashionClient.LOGGER.warn("标点 tick 异常（已忽略，下一 tick 继续）: {}", t.toString());
         }
-        relay.tick();
         warnIfStandaloneModInstalled();
     }
 
@@ -196,12 +209,10 @@ public final class PingService {
     }
 
     private void warnIfStandaloneModInstalled() {
-        if (standaloneWarningSent || !standaloneVmpingInstalled()) {
+        if (standaloneWarningSent || !standaloneVmpingPresent) {
             return;
         }
         standaloneWarningSent = true;
-        VMFashionClient.LOGGER.warn("检测到独立 VMPing 模组：标点功能已内置在 VMFashion，"
-                + "同时安装会重复注册快捷键与 HUD，建议移除 vmping-*.jar");
         if (Minecraft.getInstance().player != null) {
             ChatUtil.showLocalMessage(Component.translatable("vmfashion.ping.warning.standalone_mod"));
         }

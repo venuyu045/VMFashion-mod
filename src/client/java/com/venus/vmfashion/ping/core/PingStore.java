@@ -133,6 +133,17 @@ public final class PingStore {
         pings.entrySet().removeIf(entry -> !entry.getValue().isOwn(self));
     }
 
+    /**
+     * 只把长轮询游标归零（不清标点）。
+     *
+     * <p>房间被服务端回收重建后 {@code seq} 会从 0 重新开始；如果本地还拿着旧的高位
+     * {@code since}，之后每次长轮询服务端都不会返回任何标点（只能退服恢复）。
+     * 所以检测到序号回退时调用本方法，让下一次轮询从 0 开始补齐当前房间的存活标点。
+     */
+    public void resetCursor() {
+        lastSeq = 0L;
+    }
+
     /** 服务端时钟校准（长轮询响应里带 serverTime）。 */
     public void syncClock(long serverTimeMs) {
         clock.sync(serverTimeMs, System.currentTimeMillis());

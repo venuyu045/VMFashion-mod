@@ -73,7 +73,7 @@ com.venus.vmfashion
 ├── gui/                       衣柜 / 设置界面（WardrobeScreen / SettingsScreen / PingSettingsScreen + 组件 + 快捷键）
 ├── ping/                      ★ 标点子系统（v2.0 合订版，原独立模组 VMPing）
 │   ├── PingService            生命周期：HUD 注册 / 进服启动 / 退服停止 / tick / 热更新 / 音效
-│   ├── config.PingSettings    14 个标点配置项 + 界面常量 + 后端地址推导（挂在 ModConfig#getPing）
+│   ├── config.PingSettings    15 个标点配置项 + 界面常量 + 后端地址推导（挂在 ModConfig#getPing）
 │   ├── core/                  房间键 / 标点存储 / 时钟 / 协议数据（纯逻辑，有单测）
 │   ├── net/PingRelay          中继状态机：认证 → 长轮询 → 发送 → 退避/降级
 │   ├── net/PingApi            /api/ping HTTP 封装（复用 net.RetryPolicy）

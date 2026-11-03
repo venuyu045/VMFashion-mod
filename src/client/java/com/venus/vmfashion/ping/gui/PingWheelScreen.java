@@ -57,10 +57,23 @@ public final class PingWheelScreen extends Screen {
     private int ticksOpen;
     /** 是否已经完成标点（防止 mouseReleased + tick 兜底重复发送）。 */
     private boolean finished;
+    /**
+     * 是否由**按住按键**打开（决定要不要做"按键松开"兜底）。
+     *
+     * <p>命令 {@code /vmfashion ping open} 打开时玩家并没有按住标点键，如果仍然做
+     * "按键没按下就自动结算"的兜底，界面会在 2 tick 后自己关掉 —— 这是独立版 VMPing
+     * 就存在的小 bug，合订版顺手修掉：只有按键打开才启用兜底。
+     */
+    private final boolean expectKeyRelease;
+
+    public PingWheelScreen() {
+        this(false);
+    }
 
     @SuppressWarnings("unchecked")
-    public PingWheelScreen() {
+    private PingWheelScreen(boolean expectKeyRelease) {
         super(Component.translatable("vmfashion.ping.wheel.title"));
+        this.expectKeyRelease = expectKeyRelease;
         int outer = PingSettings.UI.WHEEL_RADIUS;
         int inner = PingSettings.UI.WHEEL_INNER_RADIUS;
         float gap = PingSettings.UI.SEGMENT_GAP_DEGREES;
@@ -72,13 +85,35 @@ public final class PingWheelScreen extends Screen {
         }
     }
 
-    /** 打开轮盘（供 {@link KeyBindings} 与命令调用）。 */
+    /**
+     * 打开轮盘（命令 / 外部入口用）。
+     *
+     * <p><b>不能</b>检查 {@code gui.screen() != null}：命令是在聊天界面的
+     * {@code keyPressed → handleChatInput} 里**同步**执行的，此刻 screen 仍是 ChatScreen；
+     * 有守卫的话 {@code /vmfashion ping open} 会静默失效（独立版 VMPing 就有这个 bug）。
+     */
     public static void open() {
+        openWith(false, false);
+    }
+
+    /**
+     * 按键打开轮盘（按住标点键）：松开按键即结算，含"收不到 mouseReleased"的兜底。
+     *
+     * <p>按键路径仍然要求当前没有其它界面，避免和聊天 / 其它模组界面抢焦点。
+     */
+    public static void openFromKey() {
+        openWith(true, true);
+    }
+
+    private static void openWith(boolean expectKeyRelease, boolean requireNoScreen) {
         Minecraft minecraft = Minecraft.getInstance();
-        if (minecraft == null || minecraft.gui.screen() != null) {
+        if (minecraft == null) {
             return;
         }
-        minecraft.gui.setScreen(new PingWheelScreen());
+        if (requireNoScreen && minecraft.gui.screen() != null) {
+            return;
+        }
+        minecraft.gui.setScreen(new PingWheelScreen(expectKeyRelease));
     }
 
     /** 当前是否有轮盘界面打开（mixin 抑制"选取方块"用）。 */
@@ -103,7 +138,7 @@ public final class PingWheelScreen extends Screen {
         ticksOpen++;
         // 兜底：某些环境（窗口失焦 / 鼠标被系统抢走）收不到 mouseReleased，
         // 这里检测"标点键已经松开"并当作松开处理，避免轮盘卡死。
-        if (!finished && ticksOpen > 2) {
+        if (expectKeyRelease && !finished && ticksOpen > 2) {
             var mapping = KeyBindings.pingKey();
             if (mapping != null && !mapping.isDown()) {
                 finish();
@@ -235,9 +270,9 @@ public final class PingWheelScreen extends Screen {
 
     @Override
     public boolean keyPressed(KeyEvent event) {
-        // Esc 取消（26.3 的按键事件是 SDL 键码，Screen#keyPressed 自己会处理 ESC → onClose；
-        // 这里只把"关闭"接到 cancel，保证 Esc 不会误发标点）
-        if (event.key() == 256) { // SDL_SCANCODE_ESCAPE / GLFW_KEY_ESCAPE 同值
+        // Esc 取消。26.3 的 KeyEvent 是 SDL 键码（Esc = 41，不是 GLFW 的 256），
+        // 必须用 InputWithModifiers#isEscape() 判断，不能硬编码数字。
+        if (event.isEscape()) {
             cancel();
             return true;
         }

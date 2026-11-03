@@ -64,6 +64,17 @@ public final class PingRelay {
 
     /** 连续失败后重试的退避序列（毫秒），封顶 30s。 */
     private static final long[] BACKOFF_MS = {1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L};
+    /**
+     * 两次"作废共享时装会话"之间的最小间隔。
+     *
+     * <p>401 可能是**本模组后端配置问题**（自建旧后端不认时装 token）而不是 token 真过期；
+     * 如果每次 401 都清一次时装会话，会连带把时装同步的 token 删掉，并触发
+     * challenge/join/verify 全量重认证 —— 持续 401 时就是每秒一轮的认证风暴。
+     * 60 秒内最多清一次，其余 401 按普通失败退避。
+     */
+    private static final long AUTH_RESET_COOLDOWN_MS = 60_000L;
+    /** 长轮询两次之间的最小间隔（防止后端立即返回 200 时变成全速请求风暴）。 */
+    private static final long MIN_POLL_INTERVAL_MS = 200L;
 
     private final PingStore store = new PingStore();
     private final PingClock clock = store.clock();
@@ -89,6 +100,8 @@ public final class PingRelay {
     private volatile long nextRetryAtMs = 0L;
     /** 是否已经启动过（防止重复 start）。 */
     private final AtomicBoolean started = new AtomicBoolean(false);
+    /** 上一次作废共享时装会话的时间戳（见 {@link #AUTH_RESET_COOLDOWN_MS}）。 */
+    private volatile long lastAuthResetAtMs;
 
     /**
      * @param bridge 认证桥（由 {@link PingService} 持有并注入；测试可传替身）
@@ -164,6 +177,11 @@ public final class PingRelay {
             return;
         }
         long gen = generation.incrementAndGet();
+        // 旧会话可能还留着一个"长轮询在飞"的标志：不清掉的话，新会话的第一次 pollLoop
+        // 会 CAS 失败直接返回，而旧请求回来时代次已变也不会再发起下一次 —— 表现就是
+        // 状态显示 ONLINE 但永远收不到别人的标点。
+        polling.set(false);
+        lastAuthResetAtMs = 0L;
         started.set(true);
         roomId = newRoomId;
         dimension = newDimension;
@@ -180,7 +198,7 @@ public final class PingRelay {
         if (RoomKey.SINGLEPLAYER.equals(normalized) || RoomKey.LAN.equals(normalized)) {
             roomId = "";
             state = State.DEGRADED;
-            lastErrorKey = "vmfashion.ping.status.local_only";
+            lastErrorKey = "vmfashion.ping.status.singleplayer";
             VMFashionClient.LOGGER.debug("单机/局域网世界不同步标点（本地模式）");
             return;
         }
@@ -321,10 +339,8 @@ public final class PingRelay {
                 VMFashionClient.LOGGER.debug("标点发送失败: {} {}", apiError.code(), apiError.getMessage());
                 store.put(localPing); // 保留本地占位（local=true）
                 if (apiError.needsReauth()) {
-                    // token 失效：丢掉时装会话，下一次 tick 会重新认证
-                    bridge.invalidateSession();
-                    state = State.AUTHENTICATING;
-                    authenticateAndPoll(gen);
+                    // token 失效：按冷却策略作废共享会话并重新认证（见 AUTH_RESET_COOLDOWN_MS）
+                    handleUnauthorized(gen, failures.incrementAndGet());
                 } else {
                     lastErrorKey = errorKey(apiError);
                     lastErrorDetail = apiError.code() + ": " + apiError.getMessage();
@@ -370,6 +386,7 @@ public final class PingRelay {
         long since = store.lastSeq();
         int timeout = settings.getPollTimeoutSeconds();
         String filterDimension = ""; // 不按维度过滤：同服不同维度的标点也收，渲染时再筛
+        long pollStartedAt = System.currentTimeMillis();
         currentApi.pollPings(roomId, since, timeout, filterDimension)
                 .whenComplete((response, throwable) -> {
                     polling.set(false);
@@ -389,6 +406,9 @@ public final class PingRelay {
                     if (result.seq() > 0L && result.seq() < store.lastSeq()) {
                         VMFashionClient.LOGGER.debug("检测到房间序号回退（{} < {}），重置游标",
                                 result.seq(), store.lastSeq());
+                        // 房间被回收后 seq 归零：游标必须一起归零，否则之后每次都带旧的高位
+                        // since，服务端永远不返回新标点（只能退服恢复）。
+                        store.resetCursor();
                         store.clearOthers(ClientContext.selfUuid());
                     }
                     List<PingData> received = result.pings();
@@ -405,8 +425,16 @@ public final class PingRelay {
                     failures.set(0L);
                     nextRetryAtMs = 0L;
                     lastErrorKey = "";
-                    // 立刻发下一次长轮询（长轮询本身会阻塞到有数据或超时，不会忙等）
-                    pollLoop(gen);
+                    // 下一次长轮询：正常情况下服务端会阻塞到有数据/超时；但如果后端/反代
+                    // 立刻返回 200（忽略 timeout），这里没有地板就会变成全速请求风暴。
+                    long elapsed = System.currentTimeMillis() - pollStartedAt;
+                    long delay = Math.max(0L, MIN_POLL_INTERVAL_MS - elapsed);
+                    if (delay > 0L) {
+                        CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS)
+                                .execute(() -> pollLoop(gen));
+                    } else {
+                        pollLoop(gen);
+                    }
                 });
     }
 
@@ -430,10 +458,36 @@ public final class PingRelay {
             }
             currentApi.setToken(session.token());
             state = State.ONLINE;
-            failures.set(0L);
+            // 不在这里清零 failures：如果认证成功但随后的请求仍然 401/失败，清零会让退避
+            // 永远从 1 秒重新开始（持续 401 时变成每秒一轮）。真正恢复由 pollLoop 成功时清零。
             nextRetryAtMs = 0L;
             pollLoop(gen);
         });
+    }
+
+    /**
+     * 处理 401：按冷却策略作废共享时装会话并重新认证。
+     *
+     * <p>冷却窗口内的 401 不再清会话（避免认证风暴 + 连带清掉时装同步的 token），
+     * 而是按普通失败退避；退避序列会继续上升，不会每秒重试。
+     */
+    private void handleUnauthorized(long gen, long count) {
+        long now = System.currentTimeMillis();
+        if (now - lastAuthResetAtMs < AUTH_RESET_COOLDOWN_MS) {
+            state = State.DEGRADED;
+            scheduleRetry(gen, count, () -> {
+                if (hasToken()) {
+                    pollLoop(gen);
+                } else {
+                    authenticateAndPoll(gen);
+                }
+            });
+            return;
+        }
+        lastAuthResetAtMs = now;
+        bridge.invalidateSession();
+        state = State.AUTHENTICATING;
+        scheduleRetry(gen, count, () -> authenticateAndPoll(gen));
     }
 
     /** 失败处理：记录错误、退避、必要时重新认证。 */
@@ -445,13 +499,13 @@ public final class PingRelay {
                 error.code(), error.getMessage());
 
         if (error.needsReauth()) {
-            bridge.invalidateSession();
-            state = State.AUTHENTICATING;
-            scheduleRetry(gen, count, () -> authenticateAndPoll(gen));
+            handleUnauthorized(gen, count);
             return;
         }
         state = State.DEGRADED;
-        if (error.backendUnavailable()) {
+        // 429（限流 / 房间满）和 5xx 一样是"过一会儿再试"：不排重试的话一次限流就会
+        // 永久降级到本地，直到退服或手动 reload。
+        if (error.backendUnavailable() || error.status() == 429) {
             // 认证阶段失败（网络抖动 / 时装层暂时不可用）要重试的是**认证**，不是轮询：
             // 没有 token 时 pollLoop 会直接返回，旧写法会让中继永远卡在降级态。
             scheduleRetry(gen, count, () -> {

@@ -17,7 +17,7 @@ import java.util.function.Consumer;
  *
  * <p>为什么现在才有：1.x 的配置项只能手改 {@code config/vmfashion/config.json}，
  * 玩家（尤其是从 Mod Menu 点「配置」进来的）没有可视化入口。v2.0 把标点功能并进来之后，
- * 配置项从 14 个涨到 28 个，再让玩家手改 JSON 不现实 —— 所以补一个统一设置界面，
+ * 配置项从 14 个涨到 29 个，再让玩家手改 JSON 不现实 —— 所以补一个统一设置界面，
  * 并在里面放<b>「标点设置…」</b>入口（标点配置有自己的二级界面 {@link PingSettingsScreen}）。
  *
  * <p>交互约定（与项目其它界面一致）：

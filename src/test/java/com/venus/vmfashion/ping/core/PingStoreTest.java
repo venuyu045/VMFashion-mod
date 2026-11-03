@@ -88,6 +88,21 @@ class PingStoreTest {
     }
 
     @Test
+    void resetCursorKeepsPingsButRewindsSince() {
+        // 房间被回收后 seq 归零：游标必须回到 0，否则下一次长轮询会带着旧的高位 since，
+        // 服务端永远不返回新标点（只能退服恢复）。
+        PingStore store = new PingStore();
+        store.put(ping("a", 7, OTHER, 100L, 10_000L));
+        store.put(ping("own", 8, SELF, 200L, 10_000L));
+        assertEquals(8L, store.lastSeq());
+
+        store.resetCursor();
+        assertEquals(0L, store.lastSeq(), "游标归零");
+        assertEquals(2, store.size(), "resetCursor 只动游标，不清标点");
+        assertTrue(store.snapshot(1_000L).stream().anyMatch(p -> p.id().equals("a")));
+    }
+
+    @Test
     void clearResetsSeq() {
         PingStore store = new PingStore();
         store.put(ping("a", 42, OTHER, 100L, 9_000L));

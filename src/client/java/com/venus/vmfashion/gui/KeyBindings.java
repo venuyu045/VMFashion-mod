@@ -34,7 +34,7 @@ import net.minecraft.resources.Identifier;
  *       不经过它注册的按键不会出现在「控制 → 按键绑定」里。</li>
  * </ul>
  *
- * <p><b>中键冲突</b>：原版中键是"选取方块"（{@code keyPickItem}）。轮盘打开期间用
+ * <p><b>中键冲突</b>：原版中键是"选取方块"（{@code keyPickItem}）。按住标点键期间用
  * {@code ping/mixin/MinecraftPickBlockMixin} 抑制 {@code Minecraft#pickBlockOrEntity}，
  * 避免"标点顺便把方块复制到手上"；其它时候中键仍是原版行为。
  */
@@ -114,7 +114,7 @@ public final class KeyBindings {
         if (consumeAll(pingWheel) && minecraft.gui.screen() == null && minecraft.player != null) {
             PingSettings settings = PingService.getInstance().settings();
             if (settings.isEnabled()) {
-                PingWheelScreen.open();
+                PingWheelScreen.openFromKey();
             }
         }
     }

@@ -18,6 +18,7 @@ import net.fabricmc.fabric.api.client.command.v2.ClientCommands;
 import net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.network.chat.Component;
 
 /**
@@ -119,7 +120,14 @@ public final class PingCommand {
     /** 打开标点设置界面（按键/命令都能到，不依赖 Mod Menu）。 */
     private static int settings() {
         Minecraft minecraft = Minecraft.getInstance();
-        minecraft.gui.setScreen(new PingSettingsScreen(minecraft.gui.screen()));
+        if (minecraft == null) {
+            return 0;
+        }
+        // 命令是在聊天界面里同步执行的：把 ChatScreen 当 parent 会导致关设置后弹回聊天框。
+        // 与 WardrobeScreen.open() 同口径 —— 聊天界面 / 未知来源一律回游戏。
+        var current = minecraft.gui.screen();
+        var parent = current instanceof ChatScreen ? null : current;
+        minecraft.gui.setScreen(new PingSettingsScreen(parent));
         return 1;
     }
 

@@ -274,5 +274,6 @@
   "vmfashion.ping.settings.section.advanced": "高级",
   "vmfashion.ping.settings.section.network": "网络",
   "vmfashion.ping.settings.api_url.effective": "实际后端：%s",
-  "vmfashion.ping.settings.api_url.local_only": "实际后端：纯本地模式（未配置时装后端）"
+  "vmfashion.ping.settings.api_url.local_only": "实际后端：纯本地模式（未配置时装后端）",
+  "vmfashion.ping.status.singleplayer": "单机/局域网世界：标点仅本机可见"
 }

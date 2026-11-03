@@ -50,6 +50,8 @@ public final class StatusOverlay {
     private static Component cachedText;
     /** 当前状态的文字颜色。 */
     private static int cachedColor;
+    /** 上一次用于文案的错误 key（DEGRADED 时状态不变但原因可能变化）。 */
+    private static String cachedErrorKey = "";
 
     private StatusOverlay() {
     }
@@ -74,11 +76,13 @@ public final class StatusOverlay {
 
         PingRelay relay = PingService.getInstance().relay();
         PingRelay.State state = relay.state();
+        String errorKey = relay.lastErrorKey();
         long now = System.currentTimeMillis();
-        if (state != lastState) {
+        if (state != lastState || !errorKey.equals(cachedErrorKey)) {
             lastState = state;
+            cachedErrorKey = errorKey;
             changedAtMs = now;
-            cachedText = textFor(state, config);
+            cachedText = textFor(state, config, errorKey);
             cachedColor = colorFor(state);
         }
         if (cachedText == null || state == PingRelay.State.ONLINE) {
@@ -106,15 +110,22 @@ public final class StatusOverlay {
         graphics.text(font, cachedText, x, y, withAlpha(cachedColor, alpha), false);
     }
 
-    /** 状态 → 文案（在线返回 {@code null}：不显示）。 */
-    private static Component textFor(PingRelay.State state, PingSettings config) {
+    /**
+     * 状态 → 文案（在线返回 {@code null}：不显示）。
+     *
+     * <p>DEGRADED 时优先显示中继维护的**具体原因**（未登录 / 明文后端 / 限流 / 单机…），
+     * 而不是永远一句"服务不可用"—— 玩家按提示就能自己处理，不用去翻命令。
+     */
+    private static Component textFor(PingRelay.State state, PingSettings config, String errorKey) {
         if (state == null) {
             return null;
         }
         return switch (state) {
             case ONLINE -> null;
             case AUTHENTICATING -> Component.translatable("vmfashion.ping.hud.status.authenticating");
-            case DEGRADED -> Component.translatable("vmfashion.ping.hud.status.degraded");
+            case DEGRADED -> errorKey != null && !errorKey.isBlank()
+                    ? Component.translatable(errorKey)
+                    : Component.translatable("vmfashion.ping.hud.status.degraded");
             case OFF -> config.relayEnabled(PingService.getInstance().authBridge().fashionApiBaseUrl())
                     ? Component.translatable("vmfashion.ping.hud.status.off")
                     : Component.translatable("vmfashion.ping.hud.status.local");
@@ -145,5 +156,6 @@ public final class StatusOverlay {
         lastState = null;
         changedAtMs = 0L;
         cachedText = null;
+        cachedErrorKey = "";
     }
 }

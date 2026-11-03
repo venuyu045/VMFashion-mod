@@ -17,7 +17,7 @@ import java.util.function.Consumer;
  * 标点设置界面（原独立模组 VMPing 的设置界面，v2.0 合订版并入时装设置二级页）。
  *
  * <p>入口：衣柜 → 设置 → 标点设置…（{@link SettingsScreen#openPingSettings()}）。
- * 覆盖 {@link PingSettings} 的全部 14 个配置项，并额外显示"实际使用的后端地址"
+ * 覆盖 {@link PingSettings} 的全部 15 个配置项，并额外显示"实际使用的后端地址"
  * （默认跟随时装后端，{@code /api/fashion} → {@code /api/ping}），让玩家不用猜。
  *
  * <p>交互与 {@link SettingsScreen} 一致：控件只改本界面内的副本，点「完成」才写回
@@ -73,6 +73,8 @@ public final class PingSettingsScreen extends Screen {
     private int pingTtlSeconds;
     private int pollTimeoutSeconds;
     private String apiBaseUrl = "";
+    /** 当前实际会用的标点后端地址（init / 输入框变化时算一次，渲染时直接用）。 */
+    private String effectiveUrl = "";
 
     public PingSettingsScreen(Screen parent) {
         super(Component.translatable("vmfashion.ping.settings.title"));
@@ -194,7 +196,11 @@ public final class PingSettingsScreen extends Screen {
         urlBox.setMaxLength(MAX_URL_LENGTH);
         urlBox.setValue(this.apiBaseUrl);
         urlBox.setHint(Component.translatable("vmfashion.ping.settings.api_url.hint"));
-        urlBox.setResponder(value -> this.apiBaseUrl = value == null ? "" : value);
+        urlBox.setResponder(value -> {
+            this.apiBaseUrl = value == null ? "" : value;
+            this.effectiveUrl = computeEffectiveApiBaseUrl();
+        });
+        this.effectiveUrl = computeEffectiveApiBaseUrl();
         this.addRenderableWidget(urlBox);
         cursorY += rowHeight + rowGap;
         this.effectiveUrlY = cursorY;
@@ -352,17 +358,20 @@ public final class PingSettingsScreen extends Screen {
                 labelX, sectionNetworkY, ModConfig.UI.ACCENT_COLOR, false);
 
         // "实际使用的后端地址"：玩家不用猜 /api/ping 是从哪来的
-        String effective = effectiveApiBaseUrl();
-        Component line = effective.isBlank()
+        Component line = effectiveUrl.isBlank()
                 ? Component.translatable("vmfashion.ping.settings.api_url.local_only")
-                : Component.translatable("vmfashion.ping.settings.api_url.effective", effective);
+                : Component.translatable("vmfashion.ping.settings.api_url.effective", effectiveUrl);
         context.text(this.font, line, labelX, effectiveUrlY, ModConfig.UI.MUTED_COLOR, false);
 
         super.extractRenderState(context, mouseX, mouseY, partialTick);
     }
 
-    /** 当前实际会用的标点后端地址（空串 = 纯本地）。 */
-    private String effectiveApiBaseUrl() {
+    /**
+     * 按当前输入框 + 时装后端地址算"实际会用的标点后端地址"（空串 = 纯本地）。
+     *
+     * <p>只在 init / 输入框变化时算，不在渲染循环里每帧 new 对象。
+     */
+    private String computeEffectiveApiBaseUrl() {
         try {
             PingSettings probe = new PingSettings();
             probe.setApiBaseUrl(this.apiBaseUrl);

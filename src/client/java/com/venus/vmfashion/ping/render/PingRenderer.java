@@ -38,8 +38,9 @@ import java.util.UUID;
  *   <li>屏幕外 / 相机背后的标点也只画边缘箭头。</li>
  * </ul>
  *
- * <p><b>性能</b>：所有每帧要用的对象（投影器、标记池、距离文字缓存）都是复用的，
- * 稳态<b>零分配</b>；最多只画最近的 {@link #MAX_MARKERS} 个图标，防止被刷屏时掉帧。
+ * <p><b>性能</b>：投影器、标记池、距离文字缓存等每帧要用的对象都复用；但
+ * {@code store.snapshot()} 与边缘指示的少量临时数组仍会每帧分配 —— 标点数量有上限
+ * （{@link #MAX_MARKERS}），这点分配量可以接受，不追求"零分配"的营销说法。
  *
  * <p>合订版适配：配置从 {@link PingSettings} 读（原 ping {@code ModConfig} 的替代），
  * 中继从 {@link PingService#relay()} 取，UI 常量走 {@link PingSettings.UI}，语言 key 改成

@@ -14,10 +14,10 @@
     "PlayerItemInHandLayerMixin",
     "PlayerModelMixin",
     "SpinAttackEffectLayerMixin",
-    "ping.GameRendererMixin",
-    "ping.MinecraftPickBlockMixin",
     "StuckInBodyLayerMixin",
-    "WingsLayerMixin"
+    "WingsLayerMixin",
+    "ping.GameRendererMixin",
+    "ping.MinecraftPickBlockMixin"
   ],
   "injectors": {
     "defaultRequire": 1
