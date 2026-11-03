@@ -140,6 +140,19 @@ public final class PingSettings {
         return enabled && !resolveApiBaseUrl(fashionApiBaseUrl).isBlank();
     }
 
+    /**
+     * 一个标点是否还要留在本地显示（{@code degradeToLocal} 的语义）。
+     *
+     * <p>中继在线时当然要显示（那就是正常路径）；中继不可用时只有开了「降级为本地标点」
+     * 才显示 —— 否则玩家明确关掉了降级，却仍然能看到"别人根本收不到的本地标点"，
+     * 会误以为同步是好的。
+     *
+     * @param relayOnline 中继当前是否在线（{@code PingRelay#online()}）
+     */
+    public boolean shouldKeepLocalPing(boolean relayOnline) {
+        return relayOnline || degradeToLocal;
+    }
+
     // ==================== Getters / Setters ====================
 
     public boolean isEnabled() {

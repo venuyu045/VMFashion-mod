@@ -57,7 +57,12 @@ public final class SoundPlayer {
                 var sound = (kind == PingKind.DANGER
                         ? SoundEvents.NOTE_BLOCK_BASS
                         : SoundEvents.NOTE_BLOCK_PLING).value();
-                minecraft.getSoundManager().play(SimpleSoundInstance.forUI(sound, volume, pitch));
+                // 参数顺序是 forUI(SoundEvent, float pitch, float volume) —— javap 核对：
+                // 26.3 的实现把<b>第一个 float 当 pitch、第二个当 volume</b>（内部
+                // new SimpleSoundInstance(..., volume=参数2, pitch=参数1)）。
+                // 旧代码按"音量在前"传参，结果音量滑块实际改的是音调：自己的标点本该是
+                // 1.6 倍高音，实际变成 0.7 倍低音 + 1.6 倍响度（音量滑块因此完全失效）。
+                minecraft.getSoundManager().play(SimpleSoundInstance.forUI(sound, pitch, volume));
             } catch (Throwable t) {
                 // 声音播不出来不影响功能
             }

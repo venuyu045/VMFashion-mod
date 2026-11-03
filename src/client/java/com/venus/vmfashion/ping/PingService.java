@@ -161,12 +161,12 @@ public final class PingService {
                 relay.start(settings);
             }
             relay.tick();
+            warnIfStandaloneModInstalled();
         } catch (Throwable t) {
             // tick 在客户端主循环里跑：任何异常抛出去都会让游戏崩（Fabric 不吞监听器异常）。
             // 标点只是附属功能，出错最多这一 tick 不更新，下一 tick 继续。
             VMFashionClient.LOGGER.warn("标点 tick 异常（已忽略，下一 tick 继续）: {}", t.toString());
         }
-        warnIfStandaloneModInstalled();
     }
 
     /**
@@ -212,9 +212,13 @@ public final class PingService {
         if (standaloneWarningSent || !standaloneVmpingPresent) {
             return;
         }
-        standaloneWarningSent = true;
-        if (Minecraft.getInstance().player != null) {
-            ChatUtil.showLocalMessage(Component.translatable("vmfashion.ping.warning.standalone_mod"));
+        Minecraft minecraft = Minecraft.getInstance();
+        if (minecraft == null || minecraft.player == null) {
+            // 主菜单 / 加载中没有聊天栏可发：这里**不能**先置位，否则提示会被主菜单的第一 tick
+            // 悄悄消耗掉，玩家进服后永远看不到"请移除独立版 VMPing"的提醒。
+            return;
         }
+        standaloneWarningSent = true;
+        ChatUtil.showLocalMessage(Component.translatable("vmfashion.ping.warning.standalone_mod"));
     }
 }

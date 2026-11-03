@@ -52,6 +52,15 @@ public final class StatusOverlay {
     private static int cachedColor;
     /** 上一次用于文案的错误 key（DEGRADED 时状态不变但原因可能变化）。 */
     private static String cachedErrorKey = "";
+    /**
+     * 上一次用来生成文案的配置实例。
+     *
+     * <p>为什么要比它：{@code ConfigReloader.reload()} 会整体替换 {@code PingSettings} 实例，
+     * 而 {@code OFF} 状态的文案取决于 {@code relayEnabled(...)}（关掉后端地址就从"未连接"
+     * 变成"纯本地"）。只比 state/errorKey 的话，玩家在设置里改完后端地址、状态仍是 OFF，
+     * 角标会一直显示旧文案。
+     */
+    private static PingSettings cachedConfig;
 
     private StatusOverlay() {
     }
@@ -78,9 +87,10 @@ public final class StatusOverlay {
         PingRelay.State state = relay.state();
         String errorKey = relay.lastErrorKey();
         long now = System.currentTimeMillis();
-        if (state != lastState || !errorKey.equals(cachedErrorKey)) {
+        if (state != lastState || !errorKey.equals(cachedErrorKey) || config != cachedConfig) {
             lastState = state;
             cachedErrorKey = errorKey;
+            cachedConfig = config;
             changedAtMs = now;
             cachedText = textFor(state, config, errorKey);
             cachedColor = colorFor(state);
@@ -157,5 +167,6 @@ public final class StatusOverlay {
         changedAtMs = 0L;
         cachedText = null;
         cachedErrorKey = "";
+        cachedConfig = null;
     }
 }

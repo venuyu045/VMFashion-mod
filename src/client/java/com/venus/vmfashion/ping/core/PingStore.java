@@ -144,6 +144,25 @@ public final class PingStore {
         lastSeq = 0L;
     }
 
+    /**
+     * 长轮询返回的房间序号是否说明「房间被服务端回收后重建」，需要把游标归零。
+     *
+     * <p>判定条件是 {@code serverSeq < localSeq}，<b>包含 serverSeq == 0 的情况</b>：
+     * 后端 {@code snapshot(create=False)} 对不存在的房间返回 {@code seq=0}（见
+     * {@code core/ping_relay.py}），而"房间空闲回收后只剩自己在线、还没人发过标点"
+     * 恰恰是最常见的回收场景 —— 少了 {@code 0} 这一支，客户端会一直带着旧的高位
+     * {@code since} 轮询一个 seq 从 0 开始的房间，永远收不到任何标点（只能退服恢复）。
+     *
+     * <p>抽成静态纯函数是为了能直接单测（{@code PingRelay} 依赖 Minecraft 类，跑不了单测）。
+     *
+     * @param serverSeq 本次长轮询响应里的房间序号（{@code seq} 字段）
+     * @param localSeq  本地游标（{@link #lastSeq()}）
+     * @return {@code true} = 序号确实回退，应调用 {@link #resetCursor()}
+     */
+    public static boolean isRoomReset(long serverSeq, long localSeq) {
+        return serverSeq < localSeq;
+    }
+
     /** 服务端时钟校准（长轮询响应里带 serverTime）。 */
     public void syncClock(long serverTimeMs) {
         clock.sync(serverTimeMs, System.currentTimeMillis());

@@ -22,21 +22,27 @@ import java.util.function.Consumer;
  *
  * <p>交互与 {@link SettingsScreen} 一致：控件只改本界面内的副本，点「完成」才写回
  * {@code config.json} 并调用 {@link ConfigReloader#reload()} 热生效（标点中继会重启）。
+ *
+ * <p><b>矮窗口（v2.0.1）</b>：与 {@link SettingsScreen} 同一套
+ * {@link SettingsLayout} 布局 —— 底部按钮钉住、内容可滚动、视口外的控件不创建。
  */
 public final class PingSettingsScreen extends Screen {
 
     // ==================== 布局常量（逻辑像素） ====================
-    private static final int PANEL_MAX_WIDTH = 400;
-    private static final int PANEL_MIN_WIDTH = 280;
-    private static final int PADDING = 10;
-    private static final int TITLE_HEIGHT = 18;
+    private static final int COLUMN_GAP = 6;
     private static final int ROW_HEIGHT = 20;
     private static final int ROW_GAP = 4;
-    private static final int LABEL_HEIGHT = 11;
     private static final int SECTION_GAP = 8;
-    private static final int COLUMN_GAP = 6;
-    private static final int BOTTOM_GAP = 8;
+    private static final int LABEL_HEIGHT = 11;
+    /** URL 输入框最大长度。 */
     private static final int MAX_URL_LENGTH = 300;
+
+    private static final SettingsLayout.Metrics[] METRIC_CANDIDATES = {
+            new SettingsLayout.Metrics(ROW_HEIGHT, ROW_GAP, SECTION_GAP, LABEL_HEIGHT),
+            new SettingsLayout.Metrics(18, 3, 8, 10),
+            new SettingsLayout.Metrics(16, 2, 6, 9),
+            new SettingsLayout.Metrics(14, 2, 4, 9),
+    };
 
     /** 返回用（ESC / 完成 / 取消都回到这里；{@code null} = 回游戏）。 */
     private final Screen parent;
@@ -52,9 +58,15 @@ public final class PingSettingsScreen extends Screen {
     private int panelY;
     private int panelWidth;
     private int panelHeight;
+    private int buttonRowY;
+    private int viewportTop;
+    private int viewportBottom;
+    private int scroll;
+    private int maxScroll;
     private int sectionDisplayY;
     private int sectionAdvancedY;
     private int sectionNetworkY;
+    /** "实际使用的后端地址"那一行的 y（-1 = 不在视口内）。 */
     private int effectiveUrlY;
 
     // ==================== 待保存的值 ====================
@@ -116,26 +128,30 @@ public final class PingSettingsScreen extends Screen {
     protected void init() {
         this.clearWidgets();
 
-        int[] metrics = pickMetrics(this.height - 12);
-        this.rowHeight = metrics[0];
-        this.rowGap = metrics[1];
-        this.sectionGap = metrics[2];
-        this.labelHeight = metrics[3];
+        SettingsLayout.Metrics metrics = SettingsLayout.pickMetrics(
+                this.height - 12, METRIC_CANDIDATES, PingSettingsScreen::layoutHeight);
+        this.rowHeight = metrics.rowHeight();
+        this.rowGap = metrics.rowGap();
+        this.sectionGap = metrics.sectionGap();
+        this.labelHeight = metrics.labelHeight();
 
-        int panelW = Math.min(PANEL_MAX_WIDTH, Math.max(1, this.width - 24));
-        panelW = Math.max(Math.min(PANEL_MIN_WIDTH, this.width - 8), panelW);
-        int contentWidth = panelW - PADDING * 2;
+        SettingsLayout.Layout layout = SettingsLayout.compute(
+                this.width, this.height, layoutHeight(metrics), metrics);
+        this.panelWidth = layout.panelWidth();
+        this.panelHeight = layout.panelHeight();
+        this.panelX = layout.panelX();
+        this.panelY = layout.panelY();
+        this.buttonRowY = layout.buttonY();
+        this.viewportTop = layout.contentTop();
+        this.viewportBottom = layout.viewportBottom();
+        this.maxScroll = layout.maxScroll();
+        this.scroll = SettingsLayout.clampScroll(this.scroll, this.maxScroll);
+
+        int contentWidth = panelWidth - SettingsLayout.PADDING * 2;
         int columnWidth = Math.max(80, (contentWidth - COLUMN_GAP) / 2);
-
-        int panelH = layoutHeight(rowHeight, rowGap, sectionGap, labelHeight);
-        this.panelWidth = panelW;
-        this.panelHeight = Math.min(panelH, Math.max(120, this.height - 8));
-        this.panelX = (this.width - panelW) / 2;
-        this.panelY = Math.max(4, (this.height - panelHeight) / 2);
-
-        int left = panelX + PADDING;
+        int left = panelX + SettingsLayout.PADDING;
         int right = left + columnWidth + COLUMN_GAP;
-        int cursorY = panelY + TITLE_HEIGHT + PADDING;
+        int cursorY = viewportTop - scroll;
 
         // ---------- 显示 ----------
         this.sectionDisplayY = cursorY;
@@ -191,40 +207,49 @@ public final class PingSettingsScreen extends Screen {
         // ---------- 网络 ----------
         this.sectionNetworkY = cursorY;
         cursorY += labelHeight;
-        EditBox urlBox = new EditBox(this.font, left, cursorY, contentWidth, rowHeight,
-                Component.translatable("vmfashion.ping.settings.api_url"));
-        urlBox.setMaxLength(MAX_URL_LENGTH);
-        urlBox.setValue(this.apiBaseUrl);
-        urlBox.setHint(Component.translatable("vmfashion.ping.settings.api_url.hint"));
-        urlBox.setResponder(value -> {
-            this.apiBaseUrl = value == null ? "" : value;
-            this.effectiveUrl = computeEffectiveApiBaseUrl();
-        });
+        if (rowVisible(cursorY, rowHeight)) {
+            EditBox urlBox = new EditBox(this.font, left, cursorY, contentWidth, rowHeight,
+                    Component.translatable("vmfashion.ping.settings.api_url"));
+            urlBox.setMaxLength(MAX_URL_LENGTH);
+            urlBox.setValue(this.apiBaseUrl);
+            urlBox.setHint(Component.translatable("vmfashion.ping.settings.api_url.hint"));
+            urlBox.setResponder(value -> {
+                this.apiBaseUrl = value == null ? "" : value;
+                this.effectiveUrl = computeEffectiveApiBaseUrl();
+            });
+            this.addRenderableWidget(urlBox);
+        }
         this.effectiveUrl = computeEffectiveApiBaseUrl();
-        this.addRenderableWidget(urlBox);
         cursorY += rowHeight + rowGap;
         this.effectiveUrlY = cursorY;
-        cursorY += labelHeight + BOTTOM_GAP;
+        cursorY += labelHeight + SettingsLayout.BOTTOM_GAP;
 
-        // ---------- 底部按钮 ----------
+        // ---------- 底部按钮（钉在面板底部，不随滚动；必须最后加，绘制在最上层） ----------
         int buttonGap = 6;
-        int buttonWidth = Math.max(40, (contentWidth - buttonGap * 2) / 3);
+        int buttonWidth = Math.max(20, (contentWidth - buttonGap * 2) / 3);
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.ping.settings.done"),
                         button -> saveAndClose())
-                .bounds(left, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left, buttonRowY, buttonWidth, rowHeight).build());
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.ping.settings.cancel"),
                         button -> onClose())
-                .bounds(left + buttonWidth + buttonGap, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left + buttonWidth + buttonGap, buttonRowY, buttonWidth, rowHeight).build());
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.ping.settings.defaults"),
                         button -> resetToDefaults())
-                .bounds(left + (buttonWidth + buttonGap) * 2, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left + (buttonWidth + buttonGap) * 2, buttonRowY, buttonWidth, rowHeight).build());
     }
 
     // ==================== 控件工厂 ====================
 
+    private boolean rowVisible(int y, int height) {
+        return SettingsLayout.rowVisible(y, height, viewportTop, viewportBottom);
+    }
+
     private void addSlider(int x, int y, int width, String labelKey,
                            double min, double max, double initial, double step, int decimals,
                            Component suffix, java.util.function.DoubleConsumer setter) {
+        if (!rowVisible(y, rowHeight)) {
+            return;
+        }
         ValueSlider slider = new ValueSlider(x, y, width, rowHeight, labelKey,
                 min, max, initial, step, decimals, suffix, setter);
         this.addRenderableWidget(slider);
@@ -232,6 +257,9 @@ public final class PingSettingsScreen extends Screen {
 
     private void addToggle(int x, int y, int width, String labelKey, boolean initial,
                            Consumer<Boolean> setter) {
+        if (!rowVisible(y, rowHeight)) {
+            return;
+        }
         boolean[] state = {initial};
         Button[] holder = new Button[1];
         holder[0] = Button.builder(toggleLabel(labelKey, state[0]), button -> {
@@ -250,31 +278,20 @@ public final class PingSettingsScreen extends Screen {
 
     // ==================== 布局度量 ====================
 
-    private static int[] pickMetrics(int availableHeight) {
-        int[][] candidates = {
-                {ROW_HEIGHT, ROW_GAP, SECTION_GAP, LABEL_HEIGHT},
-                {18, 3, 8, 10},
-                {16, 2, 6, 9},
-                {14, 2, 4, 9},
-        };
-        for (int[] candidate : candidates) {
-            if (layoutHeight(candidate[0], candidate[1], candidate[2], candidate[3]) <= availableHeight) {
-                return candidate;
-            }
-        }
-        return candidates[candidates.length - 1];
-    }
-
-    private static int layoutHeight(int rowHeight, int rowGap, int sectionGap, int labelHeight) {
+    static int layoutHeight(SettingsLayout.Metrics metrics) {
+        int rowHeight = metrics.rowHeight();
+        int rowGap = metrics.rowGap();
+        int sectionGap = metrics.sectionGap();
+        int labelHeight = metrics.labelHeight();
         // 显示：4 行 + 分区标题
         int display = labelHeight + 4 * rowHeight + 3 * rowGap;
         // 高级：3 行 + 分区标题 + 分区前间距
         int advanced = sectionGap + labelHeight + 3 * rowHeight + 2 * rowGap;
         // 网络：URL 输入框 + 实际地址说明行 + 分区标题 + 分区前间距
-        int network = sectionGap + labelHeight + rowHeight + rowGap + labelHeight + BOTTOM_GAP;
+        int network = sectionGap + labelHeight + rowHeight + rowGap + labelHeight + SettingsLayout.BOTTOM_GAP;
         // 底部按钮
         int bottom = rowHeight;
-        return TITLE_HEIGHT + PADDING * 2 + display + advanced + network + bottom;
+        return SettingsLayout.TITLE_HEIGHT + SettingsLayout.PADDING * 2 + display + advanced + network + bottom;
     }
 
     // ==================== 动作 ====================
@@ -338,6 +355,25 @@ public final class PingSettingsScreen extends Screen {
         return true;
     }
 
+    // ==================== 输入 ====================
+
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)) {
+            return true;
+        }
+        if (maxScroll <= 0) {
+            return false;
+        }
+        int next = SettingsLayout.scrollBy(scroll, (int) Math.round(scrollY), rowHeight + rowGap, maxScroll);
+        if (next == scroll) {
+            return false;
+        }
+        this.scroll = next;
+        this.rebuildWidgets();
+        return true;
+    }
+
     // ==================== 渲染 ====================
 
     @Override
@@ -345,25 +381,47 @@ public final class PingSettingsScreen extends Screen {
         context.fill(0, 0, this.width, this.height, ModConfig.UI.OVERLAY_COLOR);
         VanillaStyle.panel(context, panelX, panelY, panelWidth, panelHeight, 1.0f);
         drawCentered(context, this.title, panelX + panelWidth / 2,
-                panelY + (TITLE_HEIGHT - this.font.lineHeight) / 2 + 1, ModConfig.UI.TEXT_COLOR);
+                panelY + (SettingsLayout.TITLE_HEIGHT - this.font.lineHeight) / 2 + 1, ModConfig.UI.TEXT_COLOR);
         VanillaStyle.separator(context, panelX + 1, panelX + panelWidth - 1,
-                panelY + TITLE_HEIGHT, 1.0f);
+                panelY + SettingsLayout.TITLE_HEIGHT, 1.0f);
 
-        int labelX = panelX + PADDING;
-        context.text(this.font, Component.translatable("vmfashion.ping.settings.section.display"),
-                labelX, sectionDisplayY, ModConfig.UI.ACCENT_COLOR, false);
-        context.text(this.font, Component.translatable("vmfashion.ping.settings.section.advanced"),
-                labelX, sectionAdvancedY, ModConfig.UI.ACCENT_COLOR, false);
-        context.text(this.font, Component.translatable("vmfashion.ping.settings.section.network"),
-                labelX, sectionNetworkY, ModConfig.UI.ACCENT_COLOR, false);
+        int labelX = panelX + SettingsLayout.PADDING;
+        drawSectionLabel(context, "vmfashion.ping.settings.section.display", sectionDisplayY, labelX);
+        drawSectionLabel(context, "vmfashion.ping.settings.section.advanced", sectionAdvancedY, labelX);
+        drawSectionLabel(context, "vmfashion.ping.settings.section.network", sectionNetworkY, labelX);
 
         // "实际使用的后端地址"：玩家不用猜 /api/ping 是从哪来的
-        Component line = effectiveUrl.isBlank()
-                ? Component.translatable("vmfashion.ping.settings.api_url.local_only")
-                : Component.translatable("vmfashion.ping.settings.api_url.effective", effectiveUrl);
-        context.text(this.font, line, labelX, effectiveUrlY, ModConfig.UI.MUTED_COLOR, false);
+        if (rowVisible(effectiveUrlY, labelHeight)) {
+            Component line = effectiveUrl.isBlank()
+                    ? Component.translatable("vmfashion.ping.settings.api_url.local_only")
+                    : Component.translatable("vmfashion.ping.settings.api_url.effective", effectiveUrl);
+            context.text(this.font, line, labelX, effectiveUrlY, ModConfig.UI.MUTED_COLOR, false);
+        }
 
         super.extractRenderState(context, mouseX, mouseY, partialTick);
+        drawScrollHint(context);
+    }
+
+    private void drawSectionLabel(GuiGraphicsExtractor context, String key, int y, int x) {
+        if (!rowVisible(y, labelHeight)) {
+            return;
+        }
+        context.text(this.font, Component.translatable(key), x, y, ModConfig.UI.ACCENT_COLOR, false);
+    }
+
+    /** 内容溢出时在视口上下沿画一条极淡的提示线。 */
+    private void drawScrollHint(GuiGraphicsExtractor context) {
+        if (maxScroll <= 0) {
+            return;
+        }
+        int x0 = panelX + SettingsLayout.PADDING;
+        int x1 = panelX + panelWidth - SettingsLayout.PADDING;
+        if (scroll > 0) {
+            context.fill(x0, viewportTop - 2, x1, viewportTop - 1, 0x40000000);
+        }
+        if (scroll < maxScroll) {
+            context.fill(x0, viewportBottom + 1, x1, viewportBottom + 2, 0x40000000);
+        }
     }
 
     /**

@@ -113,6 +113,10 @@ public final class VmfashionAdapter implements UiPreviewAdapter {
         map.put("missing_pack", Scenario.of("missing_pack", "未下载时装包"));
         map.put("settings", Scenario.of("settings", "时装设置界面"));
         map.put("ping_settings", Scenario.of("ping_settings", "标点设置界面"));
+        // 注：标点轮盘（PingWheelScreen）**没有**预览场景 —— 它的构造会牵连
+        // PingService → PingRelay → PingApi → net/FashionAuth 一整条网络栈，
+        // 要为十几条类补 stub 才能进预览器（本轮收益不划算）。轮盘的几何/半径改为
+        // 用单测覆盖（ping/gui/WheelRadiusFitTest），渲染部分靠工具链外的真机验证。
         return map;
     }
 

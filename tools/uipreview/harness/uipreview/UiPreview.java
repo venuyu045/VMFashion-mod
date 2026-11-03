@@ -63,13 +63,64 @@ public final class UiPreview {
                 options.locale(), langTable.size(), spriteCount);
 
         // 4) 逐场景出图（--all 时遍历适配器声明的全部场景，脚本里不再硬编码场景名）
-        if (options.all()) {
+        if (options.sweep()) {
+            int failing = sweepSizes(adapter, options);
+            if (failing > 0) {
+                System.exit(1);
+            }
+        } else if (options.all()) {
             for (String name : adapter.scenarios().keySet()) {
                 renderScenario(adapter, options, name);
             }
         } else {
             renderScenario(adapter, options, options.scenario());
         }
+    }
+
+    /**
+     * 极端窗口尺寸扫描：每个场景 × 每个尺寸跑一遍 {@link LayoutCheck}，汇总成一张表。
+     *
+     * <p>为什么需要它：默认场景是 640×360（很大），而 v2.0.0 的两个设置界面在
+     * 320×180（720p 窗口 + GUI 缩放 4）下会把「完成 / 取消 / 恢复默认」画到屏幕外。
+     * 单尺寸预览永远发现不了这种"只有小窗口才出现"的问题，所以这里主动扫一遍。
+     *
+     * @return 有问题的场景数（>0 时以非 0 退出码结束，方便 CI 卡住回归）
+     */
+    private static int sweepSizes(UiPreviewAdapter adapter, Options options) throws Exception {
+        // 从大到小：320×240 = 1080p + 缩放 6；320×180 = 720p + 缩放 4；
+        // 240×150 / 200×120 = 窗口被拖到很小（GUI 逻辑尺寸可以低到这个量级）
+        int[][] sizes = {{640, 360}, {480, 270}, {320, 240}, {320, 180}, {240, 150}, {200, 120}};
+        int failing = 0;
+        System.out.println("尺寸扫描（每个场景 × 每个尺寸跑布局自检）");
+        for (String name : adapter.scenarios().keySet()) {
+            UiPreviewAdapter.Scenario scenario = adapter.scenarios().get(name);
+            StringBuilder row = new StringBuilder(String.format("  %-14s", name));
+            for (int[] size : sizes) {
+                Path workDir = options.outDir().resolve("sweep-fixtures");
+                adapter.installFixtures(scenario.name(), workDir);
+                Screen screen = adapter.createScreen(scenario.name());
+                screen.init(size[0], size[1]);
+                scenario.setup().accept(screen);
+                int[] mouse = scenario.mouse() == null
+                        ? new int[]{size[0] - 1, size[1] - 1}
+                        : scenario.mouse().locate(screen, size[0], size[1]);
+                if (mouse == null) {
+                    mouse = new int[]{size[0] - 1, size[1] - 1};
+                }
+                GuiGraphicsExtractor context = new GuiGraphicsExtractor(size[0], size[1]);
+                screen.extractRenderState(context, mouse[0], mouse[1], 0.0f);
+                int issues = new LayoutCheck(size[0], size[1]).check(context.commands()).issues().size();
+                row.append(String.format(" %dx%d:%s", size[0], size[1], issues == 0 ? "OK" : issues + "!"));
+                if (issues > 0) {
+                    failing++;
+                }
+            }
+            System.out.println(row);
+        }
+        System.out.println(failing == 0
+                ? "尺寸扫描通过：全部场景在所有尺寸下都没有布局告警"
+                : "尺寸扫描发现 " + failing + " 个「场景 × 尺寸」组合有布局告警");
+        return failing;
     }
 
     /** 渲染单个场景并写 PNG（+ 可选布局自检）。 */
@@ -148,7 +199,8 @@ public final class UiPreview {
 
     /** 命令行参数。 */
     public record Options(Path outDir, int width, int height, int scale, String locale,
-                          String scenario, String adapterClass, boolean report, boolean all) {
+                          String scenario, String adapterClass, boolean report, boolean all,
+                          boolean sweep) {
 
         public static Options parse(String[] args, Path modDir) {
             Path out = modDir.resolve("build/uipreview");
@@ -161,6 +213,7 @@ public final class UiPreview {
                     "com.venus.vmfashion.uipreview.VmfashionAdapter");
             boolean report = false;
             boolean all = false;
+            boolean sweep = false;
 
             for (String arg : args) {
                 if (arg.startsWith("--out=")) {
@@ -181,17 +234,22 @@ public final class UiPreview {
                     report = true;
                 } else if (arg.equals("--all")) {
                     all = true;
+                } else if (arg.equals("--sweep")) {
+                    // 极端窗口尺寸扫描：逐个场景 × 逐个尺寸跑一遍布局自检（不出图）
+                    sweep = true;
                 } else {
                     throw new IllegalArgumentException("未知参数: " + arg);
                 }
             }
-            if (width < 320 || height < 180) {
+            // 下限放宽到 160x100：v2.0.0 的"设置界面在矮窗口下把按钮画到屏幕外"就是因为
+            // 旧下限 320x180 让工具<b>拒绝</b>跑那个尺寸，问题一直没被自检抓到。
+            if (width < 160 || height < 100) {
                 throw new IllegalArgumentException("逻辑分辨率太小：" + width + "x" + height);
             }
             if (scale < 1 || scale > 6) {
                 throw new IllegalArgumentException("放大倍数需在 1..6：" + scale);
             }
-            return new Options(out, width, height, scale, locale, scenario, adapterClass, report, all);
+            return new Options(out, width, height, scale, locale, scenario, adapterClass, report, all, sweep);
         }
     }
 }

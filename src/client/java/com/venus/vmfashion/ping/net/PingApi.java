@@ -206,7 +206,10 @@ public final class PingApi {
                     String bodyText = response.body();
                     if (status / 100 == 2) {
                         JsonObject json = parseObject(bodyText);
-                        return new Attempt(status, json, null, null, -1L);
+                        // 2xx 但 body 为空 / 不是 JSON 对象：当作"没有数据"而不是失败。
+                        // 两个端点正常都返回 JSON，但网关/反代可能回 204 或吞掉 body ——
+                        // 那不该让整个中继降级到本地（旧实现会构造 http_200 错误）。
+                        return new Attempt(status, json == null ? new JsonObject() : json, null, null, -1L);
                     }
                     String code = "http_" + status;
                     String message = "HTTP " + status;

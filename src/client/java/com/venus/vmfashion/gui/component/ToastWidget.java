@@ -173,17 +173,21 @@ public class ToastWidget {
                 alpha = 1.0f;
             }
 
-            // 换行结果按 Toast 缓存（每条只算一次）：旧实现每帧都重新 O(n²) 量宽度 + 切字符串
-            List<String> lines = toast.lines(client.font);
+            // 面板宽度上限：不能超出屏幕（窄窗口 / GUI 缩放很大时 old 代码 x 会变成负数，
+            // 整条 Toast 跑到屏幕外）
+            int panelBudget = Math.max(1, Math.min(MAX_TOAST_WIDTH, screenWidth - 2 * TOAST_MARGIN));
+            // 换行必须按「这块屏幕上真实可用的文字宽度」算，而不是常量 300：
+            // 窄屏（GUI 逻辑宽 < ~360）时 300px 的行会横穿出 Toast 面板、甚至跑出屏幕。
+            // 换行结果按（Toast × 宽度）缓存，同一尺寸下每帧零重算。
+            int maxTextWidth = Math.max(16, panelBudget - TEXT_INSET);
+            List<String> lines = toast.lines(client.font, maxTextWidth);
 
             // 计算实际宽度
             int actualTextWidth = 0;
             for (String line : lines) {
                 actualTextWidth = Math.max(actualTextWidth, client.font.width(line));
             }
-            // 面板宽度不能超出屏幕：窄窗口（GUI 缩放很大）下 old 代码 x 会变成负数，整条 Toast 跑到屏幕外
-            int toastWidth = Math.min(Math.min(MAX_TOAST_WIDTH, screenWidth - 2 * TOAST_MARGIN),
-                    Math.max(150, actualTextWidth + TEXT_INSET));
+            int toastWidth = Math.min(panelBudget, Math.max(150, actualTextWidth + TEXT_INSET));
             toastWidth = Math.max(1, toastWidth);
             int toastHeight = lines.size() * 12 + 12; // 每行12px + 上下padding
 
@@ -275,6 +279,8 @@ public class ToastWidget {
         private String plain;
         /** 换行结果缓存：按字体宽度算一次，之后每帧复用（旧实现每帧 O(n²) 重算 + 分配）。 */
         private List<String> lines;
+        /** 上面这份换行结果是按多宽算的（窗口 resize 后要重算）。 */
+        private int linesWidth = -1;
 
         Toast(Component message, ToastType type, long createdAt) {
             this.message = message;
@@ -291,21 +297,26 @@ public class ToastWidget {
             return cached;
         }
 
-        /** 按 {@link ToastWidget#MAX_TEXT_WIDTH} 把纯文本切成若干行（结果缓存）。 */
-        List<String> lines(Font font) {
+        /**
+         * 把纯文本切成若干行（结果按宽度缓存）。
+         *
+         * @param maxWidth 这一帧真实可用的文字宽度（≤ {@link ToastWidget#MAX_TEXT_WIDTH}）
+         */
+        List<String> lines(Font font, int maxWidth) {
+            int width = Math.max(16, Math.min(MAX_TEXT_WIDTH, maxWidth));
             List<String> cached = lines;
-            if (cached != null) {
+            if (cached != null && linesWidth == width) {
                 return cached;
             }
             String text = plain();
             List<String> built = new ArrayList<>(2);
-            if (font.width(text) <= MAX_TEXT_WIDTH) {
+            if (font.width(text) <= width) {
                 built.add(text);
             } else {
                 int start = 0;
                 while (start < text.length()) {
                     // plainSubstrByWidth 返回"放得下的最长前缀"，一次调用就是一行（旧实现逐字符试宽度）
-                    int fit = font.plainSubstrByWidth(text.substring(start), MAX_TEXT_WIDTH).length();
+                    int fit = font.plainSubstrByWidth(text.substring(start), width).length();
                     if (fit <= 0) {
                         fit = 1; // 极端字体下一个字符都放不下：至少前进一格，避免死循环
                     }
@@ -314,6 +325,7 @@ public class ToastWidget {
                 }
             }
             this.lines = built;
+            this.linesWidth = width;
             return built;
         }
     }

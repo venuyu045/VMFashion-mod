@@ -31,32 +31,32 @@ import java.util.function.Consumer;
  * <p>布局是<b>流式 + 两列</b>的：先按内容算出面板高度，再垂直居中；窗口大小 / GUI 缩放变化时
  * {@link #init()} 会被重新调用，控件按字段里的当前值重建，所以"改了一半再拖窗口"不会丢改动。
  * 面板配色沿用 {@link VanillaStyle} 的原版容器色板（与衣柜同一套）。
+ *
+ * <p><b>矮窗口（v2.0.1）</b>：内容（14 项 ≈ 233 逻辑像素）比屏幕高时，底部三个按钮
+ * <b>钉在面板底部</b>（永远可点），中间内容区变成可滚动视口（滚轮），只创建<b>完整落在
+ * 视口内</b>的控件 —— 详见 {@link SettingsLayout}。旧实现在 320×180 下会把
+ * 「完成 / 取消 / 恢复默认」画到屏幕外（玩家能改设置但存不了）。
  */
 public final class SettingsScreen extends Screen {
 
     // ==================== 布局常量（逻辑像素） ====================
-    /** 面板最大宽度。 */
-    private static final int PANEL_MAX_WIDTH = 400;
-    /** 面板最小宽度（再窄就只压缩列宽，不再压面板）。 */
-    private static final int PANEL_MIN_WIDTH = 280;
-    /** 面板内边距。 */
-    private static final int PADDING = 10;
-    /** 标题区高度。 */
-    private static final int TITLE_HEIGHT = 18;
-    /** 控件行高。 */
-    private static final int ROW_HEIGHT = 20;
-    /** 行间距。 */
-    private static final int ROW_GAP = 4;
-    /** 分区标题占用的高度。 */
-    private static final int LABEL_HEIGHT = 11;
-    /** 分区之间的额外间距。 */
-    private static final int SECTION_GAP = 8;
     /** 两列之间的间距。 */
     private static final int COLUMN_GAP = 6;
-    /** 底部按钮区与上方控件的间距。 */
-    private static final int BOTTOM_GAP = 8;
+    /** 行间距 / 分区间距 / 分区标题高度（基准值，窗口矮时会被 {@link SettingsLayout#pickMetrics} 压缩）。 */
+    private static final int ROW_HEIGHT = 20;
+    private static final int ROW_GAP = 4;
+    private static final int SECTION_GAP = 8;
+    private static final int LABEL_HEIGHT = 11;
     /** URL 输入框最大长度。 */
     private static final int MAX_URL_LENGTH = 300;
+
+    /** 窗口矮时的候选度量（从宽松到紧凑）。 */
+    private static final SettingsLayout.Metrics[] METRIC_CANDIDATES = {
+            new SettingsLayout.Metrics(ROW_HEIGHT, ROW_GAP, SECTION_GAP, LABEL_HEIGHT),
+            new SettingsLayout.Metrics(18, 3, 8, 10),
+            new SettingsLayout.Metrics(16, 2, 6, 9),
+            new SettingsLayout.Metrics(14, 2, 4, 9),
+    };
 
     /** 返回用（ESC / 完成 / 取消都回到这里；{@code null} = 回游戏）。 */
     private final Screen parent;
@@ -72,7 +72,15 @@ public final class SettingsScreen extends Screen {
     private int panelY;
     private int panelWidth;
     private int panelHeight;
-    /** 三个分区标题的 y 坐标（渲染时画在对应控件组上方）。 */
+    /** 底部按钮行的 y（固定，不随滚动变化）。 */
+    private int buttonRowY;
+    /** 可滚动内容区的上下边界（屏幕坐标）。 */
+    private int viewportTop;
+    private int viewportBottom;
+    /** 当前滚动量 / 滚动上限（0 = 内容放得下）。 */
+    private int scroll;
+    private int maxScroll;
+    /** 三个分区标题的 y 坐标（渲染时画在对应控件组上方；-1 = 不在视口内，不画）。 */
     private int sectionDisplayY;
     private int sectionSyncY;
     private int sectionPingY;
@@ -133,27 +141,32 @@ public final class SettingsScreen extends Screen {
     protected void init() {
         this.clearWidgets();
 
-        // 窗口太矮（GUI 缩放很大 / 小窗口）时自动压缩行高与间距，保证整个面板放得下
-        int[] metrics = pickMetrics(this.height - 12);
-        this.rowHeight = metrics[0];
-        this.rowGap = metrics[1];
-        this.sectionGap = metrics[2];
-        this.labelHeight = metrics[3];
+        // 窗口太矮（GUI 缩放很大 / 小窗口）时自动压缩行高与间距；仍放不下就滚动（见 SettingsLayout）
+        SettingsLayout.Metrics metrics = SettingsLayout.pickMetrics(
+                this.height - 12, METRIC_CANDIDATES, SettingsScreen::layoutHeight);
+        this.rowHeight = metrics.rowHeight();
+        this.rowGap = metrics.rowGap();
+        this.sectionGap = metrics.sectionGap();
+        this.labelHeight = metrics.labelHeight();
 
-        int panelW = Math.min(PANEL_MAX_WIDTH, Math.max(1, this.width - 24));
-        panelW = Math.max(Math.min(PANEL_MIN_WIDTH, this.width - 8), panelW);
-        int contentWidth = panelW - PADDING * 2;
+        SettingsLayout.Layout layout = SettingsLayout.compute(
+                this.width, this.height, layoutHeight(metrics), metrics);
+        this.panelWidth = layout.panelWidth();
+        this.panelHeight = layout.panelHeight();
+        this.panelX = layout.panelX();
+        this.panelY = layout.panelY();
+        this.buttonRowY = layout.buttonY();
+        this.viewportTop = layout.contentTop();
+        this.viewportBottom = layout.viewportBottom();
+        this.maxScroll = layout.maxScroll();
+        this.scroll = SettingsLayout.clampScroll(this.scroll, this.maxScroll);
+
+        int contentWidth = panelWidth - SettingsLayout.PADDING * 2;
         int columnWidth = Math.max(80, (contentWidth - COLUMN_GAP) / 2);
-
-        int panelH = layoutHeight(rowHeight, rowGap, sectionGap, labelHeight);
-        this.panelWidth = panelW;
-        this.panelHeight = Math.min(panelH, Math.max(120, this.height - 8));
-        this.panelX = (this.width - panelW) / 2;
-        this.panelY = Math.max(4, (this.height - panelHeight) / 2);
-
-        int left = panelX + PADDING;
+        int left = panelX + SettingsLayout.PADDING;
         int right = left + columnWidth + COLUMN_GAP;
-        int cursorY = panelY + TITLE_HEIGHT + PADDING;
+        // 内容坐标原点：滚动量已经扣掉，控件直接按屏幕坐标摆放
+        int cursorY = viewportTop - scroll;
 
         // ---------- 界面与渲染 ----------
         this.sectionDisplayY = cursorY;
@@ -166,10 +179,10 @@ public final class SettingsScreen extends Screen {
         cursorY += rowHeight + rowGap;
 
         addSlider(left, cursorY, columnWidth, "vmfashion.gui.settings.option.render_distance",
-                0, 256, this.renderDistance, 8, 0,
+                0, 512, this.renderDistance, 8, 0,
                 Component.translatable("vmfashion.gui.settings.unit.blocks"), value -> this.renderDistance = (int) value);
         addSlider(right, cursorY, columnWidth, "vmfashion.gui.settings.option.model_scale",
-                0.25, 2.0, this.modelScale, 0.05, 2, Component.literal("×"), value -> this.modelScale = (float) value);
+                0.05, 8.0, this.modelScale, 0.05, 2, Component.literal("×"), value -> this.modelScale = (float) value);
         cursorY += rowHeight + rowGap;
 
         addToggle(left, cursorY, columnWidth, "vmfashion.gui.settings.option.toast",
@@ -194,61 +207,61 @@ public final class SettingsScreen extends Screen {
         cursorY += rowHeight + rowGap;
 
         addSlider(left, cursorY, columnWidth, "vmfashion.gui.settings.option.refresh_interval",
-                0, 300, this.refreshIntervalSeconds, 5, 0,
+                0, 3600, this.refreshIntervalSeconds, 5, 0,
                 Component.translatable("vmfashion.gui.settings.unit.seconds"), value -> this.refreshIntervalSeconds = (int) value);
         addSlider(right, cursorY, columnWidth, "vmfashion.gui.settings.option.cache_mb",
-                0, 4096, this.maxPackCacheMb, 128, 0,
+                0, 8192, this.maxPackCacheMb, 128, 0,
                 Component.translatable("vmfashion.gui.settings.unit.mb"), value -> this.maxPackCacheMb = (int) value);
         cursorY += rowHeight + rowGap;
 
-        EditBox apiBox = new EditBox(this.font, left, cursorY, contentWidth, rowHeight,
-                Component.translatable("vmfashion.gui.settings.option.api_url"));
-        apiBox.setMaxLength(MAX_URL_LENGTH);
-        apiBox.setValue(this.apiBaseUrl);
-        apiBox.setHint(Component.translatable("vmfashion.gui.settings.api_url.hint"));
-        apiBox.setResponder(value -> this.apiBaseUrl = value == null ? "" : value);
-        this.addRenderableWidget(apiBox);
+        addEditBox(left, cursorY, contentWidth, "vmfashion.gui.settings.option.api_url",
+                "vmfashion.gui.settings.api_url.hint", this.apiBaseUrl, value -> this.apiBaseUrl = value);
         cursorY += rowHeight + rowGap;
 
-        EditBox authBox = new EditBox(this.font, left, cursorY, contentWidth, rowHeight,
-                Component.translatable("vmfashion.gui.settings.option.auth_server"));
-        authBox.setMaxLength(MAX_URL_LENGTH);
-        authBox.setValue(this.authServer);
-        authBox.setHint(Component.translatable("vmfashion.gui.settings.auth_server.hint"));
-        authBox.setResponder(value -> this.authServer = value == null ? "" : value);
-        this.addRenderableWidget(authBox);
+        addEditBox(left, cursorY, contentWidth, "vmfashion.gui.settings.option.auth_server",
+                "vmfashion.gui.settings.auth_server.hint", this.authServer, value -> this.authServer = value);
         cursorY += rowHeight + sectionGap;
 
         // ---------- 标点 ----------
         this.sectionPingY = cursorY;
         cursorY += labelHeight;
-        Button pingEntry = Button.builder(Component.translatable("vmfashion.gui.settings.ping_entry"),
-                        button -> openPingSettings())
-                .bounds(left, cursorY, contentWidth, rowHeight)
-                .build();
-        this.addRenderableWidget(pingEntry);
-        cursorY += rowHeight + BOTTOM_GAP;
+        if (rowVisible(cursorY, rowHeight)) {
+            Button pingEntry = Button.builder(Component.translatable("vmfashion.gui.settings.ping_entry"),
+                            button -> openPingSettings())
+                    .bounds(left, cursorY, contentWidth, rowHeight)
+                    .build();
+            this.addRenderableWidget(pingEntry);
+        }
+        cursorY += rowHeight + SettingsLayout.BOTTOM_GAP;
 
-        // ---------- 底部按钮 ----------
+        // ---------- 底部按钮（钉在面板底部，不随滚动；必须最后加，绘制在最上层） ----------
         int buttonGap = 6;
-        int buttonWidth = Math.max(40, (contentWidth - buttonGap * 2) / 3);
+        int buttonWidth = Math.max(20, (contentWidth - buttonGap * 2) / 3);
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.gui.settings.done"),
                         button -> saveAndClose())
-                .bounds(left, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left, buttonRowY, buttonWidth, rowHeight).build());
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.gui.settings.cancel"),
                         button -> onClose())
-                .bounds(left + buttonWidth + buttonGap, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left + buttonWidth + buttonGap, buttonRowY, buttonWidth, rowHeight).build());
         this.addRenderableWidget(Button.builder(Component.translatable("vmfashion.gui.settings.defaults"),
                         button -> resetToDefaults())
-                .bounds(left + (buttonWidth + buttonGap) * 2, cursorY, buttonWidth, rowHeight).build());
+                .bounds(left + (buttonWidth + buttonGap) * 2, buttonRowY, buttonWidth, rowHeight).build());
     }
 
     // ==================== 控件工厂 ====================
+
+    /** 控件是否完整落在可滚动视口内（不在视口内的控件不创建，避免"看不见但点得到"）。 */
+    private boolean rowVisible(int y, int height) {
+        return SettingsLayout.rowVisible(y, height, viewportTop, viewportBottom);
+    }
 
     /** 数值滑条：值变化先写进本界面字段，点「完成」才落盘。 */
     private void addSlider(int x, int y, int width, String labelKey,
                            double min, double max, double initial, double step, int decimals,
                            Component suffix, java.util.function.DoubleConsumer setter) {
+        if (!rowVisible(y, rowHeight)) {
+            return;
+        }
         ValueSlider slider = new ValueSlider(x, y, width, rowHeight, labelKey,
                 min, max, initial, step, decimals, suffix, setter);
         this.addRenderableWidget(slider);
@@ -261,6 +274,9 @@ public final class SettingsScreen extends Screen {
      */
     private void addToggle(int x, int y, int width, String labelKey, boolean initial,
                            Consumer<Boolean> setter) {
+        if (!rowVisible(y, rowHeight)) {
+            return;
+        }
         boolean[] state = {initial};
         Button[] holder = new Button[1];
         holder[0] = Button.builder(toggleLabel(labelKey, state[0]), button -> {
@@ -271,6 +287,20 @@ public final class SettingsScreen extends Screen {
         this.addRenderableWidget(holder[0]);
     }
 
+    /** 文本输入框（URL）；不在视口内就不创建。 */
+    private void addEditBox(int x, int y, int width, String labelKey, String hintKey,
+                            String initial, Consumer<String> setter) {
+        if (!rowVisible(y, rowHeight)) {
+            return;
+        }
+        EditBox box = new EditBox(this.font, x, y, width, rowHeight, Component.translatable(labelKey));
+        box.setMaxLength(MAX_URL_LENGTH);
+        box.setValue(initial == null ? "" : initial);
+        box.setHint(Component.translatable(hintKey));
+        box.setResponder(value -> setter.accept(value == null ? "" : value));
+        this.addRenderableWidget(box);
+    }
+
     private static Component toggleLabel(String labelKey, boolean on) {
         return Component.translatable("vmfashion.gui.settings.toggle",
                 Component.translatable(labelKey),
@@ -279,40 +309,21 @@ public final class SettingsScreen extends Screen {
 
     // ==================== 布局度量 ====================
 
-    /**
-     * 选一组能在给定高度里放下的布局度量。
-     *
-     * <p>候选从"最宽松"到"最紧凑"排列，取第一个放得下的；都放不下就用最紧凑的
-     * （此时面板会略微超出窗口，但控件仍然可见、可点 —— 总比把「完成」按钮挤出屏幕好）。
-     *
-     * @return {@code {行高, 行间距, 分区间距, 分区标题高度}}
-     */
-    private static int[] pickMetrics(int availableHeight) {
-        int[][] candidates = {
-                {ROW_HEIGHT, ROW_GAP, SECTION_GAP, LABEL_HEIGHT},
-                {18, 3, 8, 10},
-                {16, 2, 6, 9},
-                {14, 2, 4, 9},
-        };
-        for (int[] candidate : candidates) {
-            if (layoutHeight(candidate[0], candidate[1], candidate[2], candidate[3]) <= availableHeight) {
-                return candidate;
-            }
-        }
-        return candidates[candidates.length - 1];
-    }
-
     /** 按给定度量算整个面板的高度（与 {@link #init()} 里的顺序必须一致）。 */
-    private static int layoutHeight(int rowHeight, int rowGap, int sectionGap, int labelHeight) {
+    static int layoutHeight(SettingsLayout.Metrics metrics) {
+        int rowHeight = metrics.rowHeight();
+        int rowGap = metrics.rowGap();
+        int sectionGap = metrics.sectionGap();
+        int labelHeight = metrics.labelHeight();
         // 界面与渲染：4 行（含 1 个分区标题）
         int display = labelHeight + 4 * rowHeight + 3 * rowGap;
         // 同步与资产：4 行（2 行双列 + 2 行输入框）+ 分区标题 + 分区前间距
         int sync = sectionGap + labelHeight + 4 * rowHeight + 3 * rowGap;
         // 标点：分区标题 + 1 行入口按钮 + 底部间距
-        int ping = sectionGap + labelHeight + rowHeight + BOTTOM_GAP;
+        int ping = sectionGap + labelHeight + rowHeight + SettingsLayout.BOTTOM_GAP;
         // 底部按钮
         int bottom = rowHeight;
-        return TITLE_HEIGHT + PADDING * 2 + display + sync + ping + bottom;
+        return SettingsLayout.TITLE_HEIGHT + SettingsLayout.PADDING * 2 + display + sync + ping + bottom;
     }
 
     // ==================== 动作 ====================
@@ -382,6 +393,32 @@ public final class SettingsScreen extends Screen {
         return true;
     }
 
+    // ==================== 输入 ====================
+
+    /**
+     * 滚轮滚动内容区（只有内容放不下时才响应）。
+     *
+     * <p>滚动后重建控件：视口外的控件本来就不该存在（否则会出现"看不见但点得到"的幽灵点击），
+     * 而控件是按屏幕坐标创建的，所以滚动只能走 {@code rebuildWidgets()}。
+     * 待保存的值在字段里，重建不会丢改动。
+     */
+    @Override
+    public boolean mouseScrolled(double mouseX, double mouseY, double scrollX, double scrollY) {
+        if (super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)) {
+            return true;
+        }
+        if (maxScroll <= 0) {
+            return false;
+        }
+        int next = SettingsLayout.scrollBy(scroll, (int) Math.round(scrollY), rowHeight + rowGap, maxScroll);
+        if (next == scroll) {
+            return false;
+        }
+        this.scroll = next;
+        this.rebuildWidgets();
+        return true;
+    }
+
     // ==================== 渲染 ====================
 
     @Override
@@ -392,19 +429,40 @@ public final class SettingsScreen extends Screen {
         VanillaStyle.panel(context, panelX, panelY, panelWidth, panelHeight, 1.0f);
         // 3) 居中标题 + 分隔线
         drawCentered(context, this.title, panelX + panelWidth / 2,
-                panelY + (TITLE_HEIGHT - this.font.lineHeight) / 2 + 1, ModConfig.UI.TEXT_COLOR);
+                panelY + (SettingsLayout.TITLE_HEIGHT - this.font.lineHeight) / 2 + 1, ModConfig.UI.TEXT_COLOR);
         VanillaStyle.separator(context, panelX + 1, panelX + panelWidth - 1,
-                panelY + TITLE_HEIGHT, 1.0f);
-        // 4) 分区小标题
-        int labelX = panelX + PADDING;
-        context.text(this.font, Component.translatable("vmfashion.gui.settings.section.display"),
-                labelX, sectionDisplayY, ModConfig.UI.ACCENT_COLOR, false);
-        context.text(this.font, Component.translatable("vmfashion.gui.settings.section.sync"),
-                labelX, sectionSyncY, ModConfig.UI.ACCENT_COLOR, false);
-        context.text(this.font, Component.translatable("vmfashion.gui.settings.section.ping"),
-                labelX, sectionPingY, ModConfig.UI.ACCENT_COLOR, false);
+                panelY + SettingsLayout.TITLE_HEIGHT, 1.0f);
+        // 4) 分区小标题（滚出视口就不画）
+        int labelX = panelX + SettingsLayout.PADDING;
+        drawSectionLabel(context, "vmfashion.gui.settings.section.display", sectionDisplayY, labelX);
+        drawSectionLabel(context, "vmfashion.gui.settings.section.sync", sectionSyncY, labelX);
+        drawSectionLabel(context, "vmfashion.gui.settings.section.ping", sectionPingY, labelX);
         // 5) 控件（原版统一绘制，必须在自定义底板之后）
         super.extractRenderState(context, mouseX, mouseY, partialTick);
+        // 6) 内容区上下边界各画一条细线：让玩家一眼看出"这里可以滚"
+        drawScrollHint(context);
+    }
+
+    private void drawSectionLabel(GuiGraphicsExtractor context, String key, int y, int x) {
+        if (!rowVisible(y, labelHeight)) {
+            return;
+        }
+        context.text(this.font, Component.translatable(key), x, y, ModConfig.UI.ACCENT_COLOR, false);
+    }
+
+    /** 内容溢出时在视口上下沿画一条极淡的提示线（原版风格：1px 深灰）。 */
+    private void drawScrollHint(GuiGraphicsExtractor context) {
+        if (maxScroll <= 0) {
+            return;
+        }
+        int x0 = panelX + SettingsLayout.PADDING;
+        int x1 = panelX + panelWidth - SettingsLayout.PADDING;
+        if (scroll > 0) {
+            context.fill(x0, viewportTop - 2, x1, viewportTop - 1, 0x40000000);
+        }
+        if (scroll < maxScroll) {
+            context.fill(x0, viewportBottom + 1, x1, viewportBottom + 2, 0x40000000);
+        }
     }
 
     /** 浅底上的居中文字（不带阴影 —— 阴影在 #C6C6C6 上会糊成脏边）。 */

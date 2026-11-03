@@ -172,9 +172,13 @@ public final class PingCommand {
             z = point.z;
         }
         PingData ping = relay.sendPing(x, y, z, kind, targetUuid, targetName);
-        if (ping != null) {
-            PingService.getInstance().onLocalPing(ping);
+        if (ping == null) {
+            // 中继不可用且配置关掉了「降级为本地标点」：sendPing 会丢弃这次标点。
+            // 命令必须给出反馈，否则玩家敲了命令什么都不会发生（看起来像卡死）。
+            ChatUtil.showLocalMessage(Component.translatable("vmfashion.ping.status.local_only"));
+            return 0;
         }
+        PingService.getInstance().onLocalPing(ping);
         return 1;
     }
 

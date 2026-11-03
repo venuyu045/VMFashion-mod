@@ -75,6 +75,13 @@ public final class PingRelay {
     private static final long AUTH_RESET_COOLDOWN_MS = 60_000L;
     /** 长轮询两次之间的最小间隔（防止后端立即返回 200 时变成全速请求风暴）。 */
     private static final long MIN_POLL_INTERVAL_MS = 200L;
+    /**
+     * 确定性错误（4xx 等）之后的低频重试间隔。
+     *
+     * <p>4xx 重试再快也不会成功（参数错 / 路由不存在 / 没有权限），但**永久降级**也不对：
+     * 后端补齐 {@code /api/ping}、反代改好规则、玩家重新登录之后应当能自愈。
+     */
+    private static final long LONG_RETRY_MS = 5 * 60 * 1000L;
 
     private final PingStore store = new PingStore();
     private final PingClock clock = store.clock();
@@ -171,9 +178,12 @@ public final class PingRelay {
         String newRoomId = ClientContext.roomId();
         String newDimension = ClientContext.dimensionId();
         if (newRoomId.isBlank()) {
-            // 单人世界/尚未加载完：不启用中继（本地标点仍然可用）
+            // 单人世界/尚未加载完：不启用中继（本地标点仍然可用）。
+            // 这里必须把 started 复位：否则上一次会话留下的 true 会让 tick 兜底再也不重试，
+            // 地址恢复可用后中继会一直停在 OFF。
             state = State.OFF;
             roomId = "";
+            started.set(false);
             return;
         }
         long gen = generation.incrementAndGet();
@@ -266,6 +276,10 @@ public final class PingRelay {
         state = State.OFF;
         roomId = "";
         dimension = "";
+        // 错误信息属于上一局：不清掉的话 /vmfashion ping status 退服后还在报旧错误
+        lastErrorKey = "";
+        lastErrorDetail = "";
+        nextRetryAtMs = 0L;
         store.clear();
         clock.reset();
         closeClients();
@@ -296,7 +310,8 @@ public final class PingRelay {
      * <p>先本地插入（立即渲染，0 延迟），再异步 POST；POST 成功用服务端返回的真实 id/seq
      * 替换本地占位；失败则把标点降级为"仅本地"（{@code local=true}）并记录错误 key。
      *
-     * @return 本地占位标点（调用方可用于播放音效/动画）
+     * @return 本地占位标点（调用方可用于播放音效/动画）；中继不可用<b>且</b>配置关掉了
+     *         「降级为本地标点」时返回 {@code null}（这次标点谁都不该看见）
      */
     public PingData sendPing(double x, double y, double z, PingKind kind,
                              UUID targetUuid, String targetName) {
@@ -314,13 +329,17 @@ public final class PingRelay {
                 && roomId != null && !roomId.isBlank();
 
         if (!canSend) {
+            lastErrorKey = state == State.OFF
+                    ? "vmfashion.ping.status.disconnected"
+                    : "vmfashion.ping.status.local_only";
+            if (!currentSettings.shouldKeepLocalPing(false)) {
+                // 配置里关掉了「中继不可用时降级为本地标点」：这时连本地都不该显示，
+                // 否则那个开关等于没作用（旧实现无条件 store.put，开关形同虚设）。
+                VMFashionClient.LOGGER.debug("中继不可用且已关闭本地降级，本次标点丢弃");
+                return null;
+            }
             // 降级：只本地可见
             store.put(localPing);
-            if (currentSettings.isDegradeToLocal()) {
-                lastErrorKey = state == State.OFF
-                        ? "vmfashion.ping.status.disconnected"
-                        : "vmfashion.ping.status.local_only";
-            }
             return localPing;
         }
 
@@ -403,7 +422,10 @@ public final class PingRelay {
                         store.syncClock(result.serverTime());
                     }
                     // 房间被回收后重建：seq 归零。如果还拿着旧 since，会永远收不到新标点。
-                    if (result.seq() > 0L && result.seq() < store.lastSeq()) {
+                    // 判定包含 seq==0：后端对"不存在的房间"就返回 seq=0（create=False），
+                    // 而"房间被回收、只剩自己在线、还没人发标点"时恰好一直是 0 —— 少了这一支
+                    // 客户端会永久收不到标点（判定逻辑见 PingStore#isRoomReset，有单测）。
+                    if (PingStore.isRoomReset(result.seq(), store.lastSeq())) {
                         VMFashionClient.LOGGER.debug("检测到房间序号回退（{} < {}），重置游标",
                                 result.seq(), store.lastSeq());
                         // 房间被回收后 seq 归零：游标必须一起归零，否则之后每次都带旧的高位
@@ -515,7 +537,19 @@ public final class PingRelay {
                     authenticateAndPoll(gen);
                 }
             });
+            return;
         }
+        // 其余是"确定性错误"（400 / 403 / 404 …，含认证链路的 join_failed / bad_verify）：
+        // 不能按指数退避猛重试，但也**不该永久降级** —— 后端补齐 /api/ping 路由、反代改好规则、
+        // 玩家重新登录之后都应当能自愈，而旧实现只能退服或 /vmfashion config reload。
+        // 这里排一次低频重试（5 分钟），代价可以忽略。
+        scheduleRetryAfter(gen, LONG_RETRY_MS, () -> {
+            if (hasToken()) {
+                pollLoop(gen);
+            } else {
+                authenticateAndPoll(gen);
+            }
+        });
     }
 
     /** 当前 HTTP 客户端是否已拿到 token（认证失败后的重试路径选择用）。 */
@@ -526,8 +560,13 @@ public final class PingRelay {
 
     private void scheduleRetry(long gen, long failuresSoFar, Runnable action) {
         long delay = BACKOFF_MS[(int) Math.min(BACKOFF_MS.length - 1, Math.max(0, failuresSoFar - 1))];
-        nextRetryAtMs = System.currentTimeMillis() + delay;
-        CompletableFuture.delayedExecutor(delay, TimeUnit.MILLISECONDS).execute(() -> {
+        scheduleRetryAfter(gen, delay, action);
+    }
+
+    /** 固定延迟的重试（确定性错误用，不走指数退避）。 */
+    private void scheduleRetryAfter(long gen, long delayMs, Runnable action) {
+        nextRetryAtMs = System.currentTimeMillis() + delayMs;
+        CompletableFuture.delayedExecutor(delayMs, TimeUnit.MILLISECONDS).execute(() -> {
             if (generation.get() != gen || !started.get()) {
                 return;
             }

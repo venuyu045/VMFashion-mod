@@ -49,6 +49,18 @@ public final class PingWheelScreen extends Screen {
     /** 轮盘中心（逻辑像素）。 */
     private int centerX;
     private int centerY;
+    /**
+     * 本次布局实际使用的轮盘半径（小窗口 / 大 GUI 缩放下会被夹小，见 {@link #init()}）。
+     *
+     * <p>旧实现直接用配置里的固定半径 78：GUI 逻辑高只有 150（720p 窗口 + 缩放 4、
+     * 1080p + 缩放 5 都会出现）时轮盘上下各溢出 3px、底部操作提示整行画到屏幕外；
+     * 更小的窗口下连中心文字都会被挤出屏幕。半径按 {@code min(宽,高)/2 - 16} 夹一次，
+     * 命中检测、扇区线段、图标/文字位置全部跟着同一个值走。
+     */
+    private int outerRadius = PingSettings.UI.WHEEL_RADIUS;
+    private int innerRadius = PingSettings.UI.WHEEL_INNER_RADIUS;
+    /** 中心圆半径（跟着外半径一起收缩，否则小轮盘会被中心圆吃掉）。 */
+    private int centerRadius = PingSettings.UI.WHEEL_CENTER_RADIUS;
     /** 各扇区的预计算线段。 */
     private final List<WheelGeometry.Span>[] sectorSpans;
     /** 当前选中的扇区下标；{@code -1} = 未选中。 */
@@ -58,11 +70,15 @@ public final class PingWheelScreen extends Screen {
     /** 是否已经完成标点（防止 mouseReleased + tick 兜底重复发送）。 */
     private boolean finished;
     /**
-     * 是否由**按住按键**打开（决定要不要做"按键松开"兜底）。
+     * 是否由**按住按键**打开（决定要不要做兜底取消）。
      *
-     * <p>命令 {@code /vmfashion ping open} 打开时玩家并没有按住标点键，如果仍然做
-     * "按键没按下就自动结算"的兜底，界面会在 2 tick 后自己关掉 —— 这是独立版 VMPing
-     * 就存在的小 bug，合订版顺手修掉：只有按键打开才启用兜底。
+     * <p>命令 {@code /vmfashion ping open} 打开时玩家并没有按住标点键，如果仍然做兜底，
+     * 界面可能在几 tick 后自己关掉 —— 这是独立版 VMPing 就存在的小 bug，合订版顺手修掉：
+     * 只有按键打开才启用兜底。
+     *
+     * <p>兜底的判据是<b>窗口失焦</b>而不是"按键已松开"：{@code Gui#setScreen()} 会调用
+     * {@code KeyMapping.releaseAll()}，按键的 {@code isDown()} 在界面打开后恒为 false
+     * （详见 {@link WheelClosePolicy} 的说明）。
      */
     private final boolean expectKeyRelease;
 
@@ -74,14 +90,23 @@ public final class PingWheelScreen extends Screen {
     private PingWheelScreen(boolean expectKeyRelease) {
         super(Component.translatable("vmfashion.ping.wheel.title"));
         this.expectKeyRelease = expectKeyRelease;
-        int outer = PingSettings.UI.WHEEL_RADIUS;
-        int inner = PingSettings.UI.WHEEL_INNER_RADIUS;
-        float gap = PingSettings.UI.SEGMENT_GAP_DEGREES;
         this.sectorSpans = new List[WheelGeometry.SECTOR_COUNT];
+        rebuildGeometry();
+    }
+
+    /**
+     * 按当前半径重算 5 个扇区的线段。
+     *
+     * <p>几何只和半径有关、与轮盘位置无关，所以 {@link #init()}（窗口 resize 会重新调用）
+     * 里重算一次即可，渲染循环里只做平移 + fill。
+     */
+    @SuppressWarnings("unchecked")
+    private void rebuildGeometry() {
+        float gap = PingSettings.UI.SEGMENT_GAP_DEGREES;
         for (int i = 0; i < WheelGeometry.SECTOR_COUNT; i++) {
             float start = WheelGeometry.sectorStart(i) + gap / 2f;
             float end = WheelGeometry.sectorEnd(i) - gap / 2f;
-            sectorSpans[i] = WheelGeometry.sectorSpans(outer, inner, start, end);
+            sectorSpans[i] = WheelGeometry.sectorSpans(outerRadius, innerRadius, start, end);
         }
     }
 
@@ -126,6 +151,25 @@ public final class PingWheelScreen extends Screen {
     protected void init() {
         this.centerX = this.width / 2;
         this.centerY = this.height / 2;
+        // 半径要放得下（几何计算在 WheelGeometry 里，纯逻辑、有单测）：
+        // 留 16px 给"图标/名称 + 底部提示"，最小 24px
+        this.outerRadius = WheelGeometry.fitOuterRadius(this.width, this.height,
+                PingSettings.UI.WHEEL_RADIUS);
+        this.innerRadius = WheelGeometry.fitInnerRadius(this.outerRadius,
+                PingSettings.UI.WHEEL_INNER_RADIUS, PingSettings.UI.WHEEL_RADIUS);
+        this.centerRadius = WheelGeometry.fitCenterRadius(this.outerRadius,
+                PingSettings.UI.WHEEL_CENTER_RADIUS);
+        rebuildGeometry();
+    }
+
+    /** 本次布局的轮盘外半径（预览器 / 单测读取）。 */
+    public int outerRadius() {
+        return outerRadius;
+    }
+
+    /** 本次布局的中心死区半径（预览器 / 单测读取）。 */
+    public int innerRadius() {
+        return innerRadius;
     }
 
     @Override
@@ -136,13 +180,17 @@ public final class PingWheelScreen extends Screen {
     @Override
     public void tick() {
         ticksOpen++;
-        // 兜底：某些环境（窗口失焦 / 鼠标被系统抢走）收不到 mouseReleased，
-        // 这里检测"标点键已经松开"并当作松开处理，避免轮盘卡死。
-        if (expectKeyRelease && !finished && ticksOpen > 2) {
-            var mapping = KeyBindings.pingKey();
-            if (mapping != null && !mapping.isDown()) {
-                finish();
-            }
+        // 兜底：窗口失焦（Alt+Tab / 鼠标被系统抢走）时收不到 mouseReleased，轮盘会卡住，
+        // 这里当作取消处理。判定见 WheelClosePolicy（纯逻辑 + 单测）。
+        //
+        // ⚠️ 不能用 KeyBindings.pingKey().isDown() 判断"按键已松开"：26.3 的 Gui#setScreen()
+        // 在设置非空界面时会调用 KeyMapping.releaseAll()，轮盘一打开 isDown() 就是 false ——
+        // 旧写法（!isDown() → finish()）会让轮盘在第 3 tick 自己关掉，"按住选类型"完全失效。
+        // MouseHandler#isMiddlePressed() 也不能用：它只在没有界面时更新，松开后仍是 true。
+        Minecraft minecraft = Minecraft.getInstance();
+        boolean windowActive = minecraft == null || minecraft.isWindowActive();
+        if (WheelClosePolicy.shouldAutoCancel(expectKeyRelease, finished, ticksOpen, windowActive)) {
+            cancel();
         }
     }
 
@@ -152,7 +200,7 @@ public final class PingWheelScreen extends Screen {
     public void extractRenderState(GuiGraphicsExtractor context, int mouseX, int mouseY, float partialTick) {
         // 先算选中扇区（渲染和命中用同一套几何）
         selected = WheelGeometry.hitTest(mouseX, mouseY, centerX, centerY,
-                PingSettings.UI.WHEEL_INNER_RADIUS, PingSettings.UI.WHEEL_RADIUS);
+                innerRadius, outerRadius);
 
         // 1. 扇区
         for (int i = 0; i < WheelGeometry.SECTOR_COUNT; i++) {
@@ -166,9 +214,8 @@ public final class PingWheelScreen extends Screen {
         drawSectorDividers(context);
 
         // 3. 中心圆
-        fillCircle(context, centerX, centerY, PingSettings.UI.WHEEL_CENTER_RADIUS, PingSettings.UI.WHEEL_BG);
-        drawCircleOutline(context, centerX, centerY, PingSettings.UI.WHEEL_CENTER_RADIUS,
-                PingSettings.UI.WHEEL_BORDER);
+        fillCircle(context, centerX, centerY, centerRadius, PingSettings.UI.WHEEL_BG);
+        drawCircleOutline(context, centerX, centerY, centerRadius, PingSettings.UI.WHEEL_BORDER);
 
         // 4. 中心文字：当前选中类型 / 提示
         Component centerText = selected >= 0
@@ -182,7 +229,7 @@ public final class PingWheelScreen extends Screen {
             PingKind kind = PingKind.values()[i];
             boolean active = i == selected;
             double midRad = Math.toRadians(WheelGeometry.sectorStart(i) + WheelGeometry.SECTOR_DEGREES / 2f);
-            int labelRadius = PingSettings.UI.WHEEL_RADIUS - 16;
+            int labelRadius = Math.max(innerRadius + 6, outerRadius - 16);
             int lx = centerX + (int) Math.round(Math.sin(midRad) * labelRadius);
             int ly = centerY - (int) Math.round(Math.cos(midRad) * labelRadius);
 
@@ -200,8 +247,8 @@ public final class PingWheelScreen extends Screen {
         // 6. 底部操作提示
         Component hint = Component.translatable("vmfashion.ping.wheel.hint");
         int hintWidth = this.font.width(hint);
-        context.text(this.font, hint, centerX - hintWidth / 2,
-                centerY + PingSettings.UI.WHEEL_RADIUS + 10, 0xFFA0A0A0);
+        int hintY = Math.min(centerY + outerRadius + 10, this.height - this.font.lineHeight - 2);
+        context.text(this.font, hint, centerX - hintWidth / 2, Math.max(0, hintY), 0xFFA0A0A0);
     }
 
     /** 把预计算的水平线段画到屏幕上。 */
@@ -215,8 +262,8 @@ public final class PingWheelScreen extends Screen {
 
     /** 扇区分隔线（从内圈到外圈，沿扇区边界方向）。 */
     private void drawSectorDividers(GuiGraphicsExtractor context) {
-        int inner = PingSettings.UI.WHEEL_INNER_RADIUS;
-        int outer = PingSettings.UI.WHEEL_RADIUS;
+        int inner = innerRadius;
+        int outer = outerRadius;
         for (int i = 0; i < WheelGeometry.SECTOR_COUNT; i++) {
             double angle = Math.toRadians(WheelGeometry.sectorStart(i));
             for (int r = inner; r <= outer; r++) {

@@ -141,4 +141,41 @@ class PingStoreTest {
         store.syncClock(before + 30_000L);
         assertTrue(store.now() >= before + 25_000L, "服务端时间偏移应当生效");
     }
+
+    // ==================== 房间回收检测（v2.0.1） ====================
+
+    @Test
+    void isRoomResetDetectsSeqRollbackIncludingZero() {
+        // 房间被回收后 seq 归零；seq==0 必须也算回退 —— 后端对"不存在的房间"就返回 seq=0
+        // （ping_relay.py 的 snapshot(create=False)）。漏掉这一支的后果：只剩自己在线时游标
+        // 永远不重置，之后再也收不到任何标点（只能退服恢复）。
+        assertTrue(PingStore.isRoomReset(0L, 45L), "seq=0 也是回退（房间被回收后重建）");
+        assertTrue(PingStore.isRoomReset(1L, 45L));
+        assertTrue(PingStore.isRoomReset(44L, 45L));
+    }
+
+    @Test
+    void isRoomResetIgnoresNormalAndForwardSeq() {
+        assertFalse(PingStore.isRoomReset(0L, 0L), "全新客户端（游标 0）不是回退");
+        assertFalse(PingStore.isRoomReset(45L, 45L), "序号没动不是回退");
+        assertFalse(PingStore.isRoomReset(46L, 45L), "序号前进不是回退");
+        assertFalse(PingStore.isRoomReset(1L, 0L), "第一次进已有房间不是回退");
+    }
+
+    @Test
+    void roomResetThenCursorRewindRefetchesFromZero() {
+        // 端到端语义：检测到回退 → resetCursor → 下一次长轮询的 since 是 0 → 能补齐房间里的存活标点
+        PingStore store = new PingStore();
+        store.put(ping("old", 45, OTHER, 100L, 999_999L));
+        assertEquals(45L, store.lastSeq());
+
+        assertTrue(PingStore.isRoomReset(0L, store.lastSeq()));
+        store.resetCursor();
+        store.clearOthers(SELF);
+        assertEquals(0L, store.lastSeq(), "下一次长轮询必须从 since=0 开始");
+
+        // 服务端按 since=0 返回新房间里的标点，游标重新前进
+        store.putAll(List.of(ping("new", 3, OTHER, 200L, 999_999L)));
+        assertEquals(3L, store.lastSeq());
+    }
 }

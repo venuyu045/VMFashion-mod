@@ -147,4 +147,49 @@ public final class WheelGeometry {
     public static float sectorEnd(int index) {
         return normalizeDegrees((index + 1) * SECTOR_DEGREES);
     }
+
+    /** 轮盘半径之外留给"图标 + 名称 + 底部提示"的边距（像素）。 */
+    public static final int RADIUS_MARGIN = 16;
+    /** 轮盘最小外半径（再小就没法用手指/鼠标选扇区了）。 */
+    public static final int MIN_OUTER_RADIUS = 24;
+
+    /**
+     * 按视口尺寸算出实际可用的轮盘外半径。
+     *
+     * <p>为什么需要它：半径是配置常量（78），而 GUI 逻辑高度可以是 150（720p 窗口 +
+     * 缩放 4、1080p + 缩放 5 都会出现）—— 固定半径会让轮盘上下各溢出 3px、底部操作提示
+     * 整行画到屏幕外。这里按 {@code min(宽,高)/2 - 16} 夹一次，保证整个轮盘（含外侧图标和
+     * 底部提示）永远在屏幕内。
+     *
+     * @param width  视口宽（逻辑像素）
+     * @param height 视口高
+     * @param preferred 期望半径（通常是 {@code PingSettings.UI.WHEEL_RADIUS}）
+     * @return 实际半径（≥ {@link #MIN_OUTER_RADIUS}，且 ≤ {@code preferred}）
+     */
+    public static int fitOuterRadius(int width, int height, int preferred) {
+        int maxRadius = Math.max(MIN_OUTER_RADIUS, Math.min(width, height) / 2 - RADIUS_MARGIN);
+        return Math.max(MIN_OUTER_RADIUS, Math.min(preferred, maxRadius));
+    }
+
+    /**
+     * 内圈（中心死区）半径：按外半径等比缩放，保持"死区占 28%"的手感。
+     *
+     * @param outerRadius   {@link #fitOuterRadius} 的结果
+     * @param preferredInner 期望内半径（通常是 {@code PingSettings.UI.WHEEL_INNER_RADIUS}）
+     * @param preferredOuter 期望外半径（用来算比例）
+     */
+    public static int fitInnerRadius(int outerRadius, int preferredInner, int preferredOuter) {
+        if (preferredOuter <= 0 || outerRadius <= 0) {
+            return Math.max(0, preferredInner);
+        }
+        double ratio = preferredInner / (double) preferredOuter;
+        return Math.max(0, Math.min(outerRadius - 1, (int) Math.round(outerRadius * ratio)));
+    }
+
+    /**
+     * 中心圆半径：不能大于外半径的 1/3（否则小轮盘会被中心圆吃掉）。
+     */
+    public static int fitCenterRadius(int outerRadius, int preferredCenter) {
+        return Math.max(0, Math.min(preferredCenter, Math.max(0, outerRadius / 3)));
+    }
 }

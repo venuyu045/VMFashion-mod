@@ -162,8 +162,8 @@ public final class PingRenderer {
         UUID self = ClientContext.selfUuid();
         boolean showNames = config.isShowPlayerNames() || ClientContext.isPlayerListKeyDown();
         double maxIconDistance = Math.max(8, config.getMaxIconDistance());
-        float edgeMargin = Math.min(PingSettings.UI.EDGE_INDICATOR_MARGIN,
-                Math.max(2, Math.min(width, height) / 8));
+        // 边缘指示的安全区先按当前视口算好：下面的"沿边坐标"和稍后的绘制都读同一份
+        EdgeIndicator.prepare(width, height);
 
         int markerCount = 0;
         int edgeCount = 0;
@@ -228,7 +228,7 @@ public final class PingRenderer {
                 item.color = ping.kind().color();
                 item.alpha = Math.max(alpha, 0.35f); // 屏幕外的指示不能太淡，否则等于没有
                 item.distance = distance;
-                item.coordinate = edgeCoordinate(item.angle, width, height, edgeMargin);
+                item.coordinate = edgeCoordinate(item.angle, width, height);
             }
         }
 
@@ -257,9 +257,12 @@ public final class PingRenderer {
             }
             MARKER_POOL.set(j + 1, current);
         }
-        // 只画最近的 MAX_MARKERS 个；从远到近画，近的压在上面
-        int start = Math.max(0, count - MAX_MARKERS);
-        for (int i = count - 1; i >= start; i--) {
+        // 排序后下标 0 = 最近。超出上限时只保留<b>最近</b>的 MAX_MARKERS 个
+        // （旧写法用 count - MAX_MARKERS 当起点，留下的是<b>最远</b>的那批 —— 标点多时
+        // 屏幕上最近的标记反而被丢掉，玩家看到的是远处一堆小点）。
+        int end = Math.min(count, MAX_MARKERS);
+        // 从远到近画，近的压在上面
+        for (int i = end - 1; i >= 0; i--) {
             drawMarker(graphics, font, MARKER_POOL.get(i), config, showNames);
         }
     }
@@ -287,24 +290,27 @@ public final class PingRenderer {
         }
 
         int textColor = WorldProjector.withAlpha(0xFFFFFFFF, marker.alpha);
-        int shadowColor = WorldProjector.withAlpha(0xFF000000, marker.alpha * 0.75f);
+        // 文字底衬也要跟着淡出：淡出末尾只剩文字是半透明、底衬还是实心黑，会留下一个"黑框"
+        // （旧实现把底衬写死成常量 LABEL_BACKDROP，传进 drawCenteredLabel 的 backdrop 参数
+        // 压根没被用到 —— 参数被忽略，等于没有淡出）。
+        int backdrop = WorldProjector.withAlpha(LABEL_BACKDROP, marker.alpha);
         int lineHeight = font.lineHeight;
 
         // 距离：图标上方
         if (config.isShowDistance()) {
             DistanceLabel label = labelFor(marker.pingId, marker.distance);
-            drawCenteredLabel(graphics, font, label.text, x, y - radius - lineHeight - 3, textColor, shadowColor);
+            drawCenteredLabel(graphics, font, label.text, x, y - radius - lineHeight - 3, textColor, backdrop);
         }
         // 类型名：图标下方
         Component kindLabel = kindLabel(marker.kind);
-        drawCenteredLabel(graphics, font, kindLabel, x, y + radius + 3, textColor, shadowColor);
+        drawCenteredLabel(graphics, font, kindLabel, x, y + radius + 3, textColor, backdrop);
 
         // 标点者名字：类型名下方（配置开启或按住 Tab 玩家列表）
         if (showNames && !marker.own) {
             String name = marker.playerName;
             if (name != null && !name.isEmpty()) {
                 drawCenteredLabel(graphics, font, name, x, y + radius + 3 + lineHeight + 1,
-                        WorldProjector.withAlpha(0xFFD0D0D0, marker.alpha), shadowColor);
+                        WorldProjector.withAlpha(0xFFD0D0D0, marker.alpha), backdrop);
             }
         }
     }
@@ -316,7 +322,7 @@ public final class PingRenderer {
         }
         int textWidth = font.width(text);
         int x = centerX - textWidth / 2;
-        graphics.fill(x - 2, topY - 1, x + textWidth + 2, topY + font.lineHeight, LABEL_BACKDROP);
+        graphics.fill(x - 2, topY - 1, x + textWidth + 2, topY + font.lineHeight, backdrop);
         graphics.text(font, text, x, topY, color, false);
     }
 
@@ -327,7 +333,7 @@ public final class PingRenderer {
         }
         int textWidth = font.width(text);
         int x = centerX - textWidth / 2;
-        graphics.fill(x - 2, topY - 1, x + textWidth + 2, topY + font.lineHeight, LABEL_BACKDROP);
+        graphics.fill(x - 2, topY - 1, x + textWidth + 2, topY + font.lineHeight, backdrop);
         graphics.text(font, text, x, topY, color, false);
     }
 
@@ -359,10 +365,17 @@ public final class PingRenderer {
         }
     }
 
-    /** 箭头在"边"上的坐标：左右边用 y，上下边用 x（堆叠分组排序用）。 */
-    private static float edgeCoordinate(float angle, int width, int height, float margin) {
+    /**
+     * 箭头在"边"上的坐标：左右边用 y，上下边用 x（堆叠分组排序用）。
+     *
+     * <p>边距必须和 {@link EdgeIndicator#prepare(int, int)} 用<b>同一个</b>值：
+     * 旧实现这里直接用配置里的固定边距，而 {@code EdgeIndicator} 会在小窗口下把它夹小，
+     * 于是"堆叠分组按大边距排、箭头画在小边距上"，同一方向的多个箭头又会挤到一起。
+     */
+    private static float edgeCoordinate(float angle, int width, int height) {
+        float margin = EdgeIndicator.marginFor(width, height);
         float[] edge = EdgeIndicatorMath.rectIntersection(angle, margin, margin,
-                width - margin, height - margin);
+                Math.max(margin + 1, width - margin), Math.max(margin + 1, height - margin));
         int side = EdgeIndicatorMath.sideOf(angle);
         return (side == EdgeIndicatorMath.SIDE_LEFT || side == EdgeIndicatorMath.SIDE_RIGHT)
                 ? edge[1]

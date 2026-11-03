@@ -425,7 +425,10 @@ public final class WardrobeScreen extends Screen {
         this.gridWidth = Math.max(1, previewLeft - padding - gridX);
         // 预览栏隐藏时按钮搬到网格下方，网格底部要给按钮留出高度，否则按钮会压住卡片
         int gridBottom = previewHidden ? contentBottom - buttonHeight - padding : contentBottom;
-        this.gridHeight = Math.max(cardHeight, gridBottom - gridY);
+        // 高度**绝不**低于可用空间以外的值：旧写法 max(cardHeight, …) 在极矮窗口
+        // （GUI 逻辑高 < ~130）下会让网格越过 contentBottom 盖住底部状态行 ——
+        // 看得见的是状态文字、点得中的是卡片（幽灵点击）。宁可一张卡片都不显示。
+        this.gridHeight = Math.max(0, gridBottom - gridY);
         this.columns = Math.max(1, (gridWidth + cardGap) / (cardWidth + cardGap));
 
         buildTabs(contentLeft, contentTop);
@@ -695,6 +698,31 @@ public final class WardrobeScreen extends Screen {
         drawScrollBar(context, alpha);
     }
 
+    /** 滚动条宽度（像素）。 */
+    private static final int SCROLL_BAR_WIDTH = 5;
+
+    /**
+     * 滚动条的 x 坐标；没有滚动条 / 放不下时返回 {@code -1}。
+     *
+     * <p>抽出来是为了让"画"和"命中判定"用同一份几何 —— 两处各算一次必然漂移。
+     */
+    private int scrollBarX() {
+        if (maxScroll() <= 0 || gridHeight <= 8) {
+            return -1;
+        }
+        int barX = gridX + gridWidth + Math.max(1, (padding - SCROLL_BAR_WIDTH) / 2);
+        if (barX + SCROLL_BAR_WIDTH > panelX + panelWidth - padding) {
+            return -1;
+        }
+        return barX;
+    }
+
+    /** 鼠标是否落在滚动条上（滚轮滚动条也要生效，见 {@link #mouseScrolled}）。 */
+    private boolean isOverScrollBar(double mouseX, double mouseY) {
+        int barX = scrollBarX();
+        return barX >= 0 && isInside(mouseX, mouseY, barX, gridY, SCROLL_BAR_WIDTH, gridHeight);
+    }
+
     /**
      * 网格滚动条（原版样式）。
      *
@@ -712,9 +740,9 @@ public final class WardrobeScreen extends Screen {
             // 不需要滚动就不画 —— 原版也是内容放得下时不出滚动条
             return;
         }
-        int barWidth = 5;
-        int barX = gridX + gridWidth + Math.max(1, (padding - barWidth) / 2);
-        if (barX + barWidth > panelX + panelWidth - padding) {
+        int barWidth = SCROLL_BAR_WIDTH;
+        int barX = scrollBarX();
+        if (barX < 0) {
             return;
         }
         int trackTop = gridY;
@@ -929,12 +957,40 @@ public final class WardrobeScreen extends Screen {
             context.fill(right - 1, top, right, bottom, withAlpha(ModConfig.UI.PANEL_HIGHLIGHT, alpha));
         }
 
+        // 内容裁剪到预览面板内：窗口很矮时缩略图 / 标签会超出面板底边，画到下面的
+        // 穿上/脱下按钮和底部状态行上（预览图里能看到文字从两个按钮的缝隙里透出来）。
+        // 裁剪是最省事也最不会漏的兜底 —— 面板几何怎么变都不会溢出。
+        boolean clipped = right > left && bottom > top;
+        if (clipped) {
+            context.enableScissor(left, top, right, bottom);
+        }
+        try {
+            drawPreviewContent(context, left, right, top, bottom, alpha);
+        } finally {
+            if (clipped) {
+                context.disableScissor();
+            }
+        }
+    }
+
+    /**
+     * 预览面板的内容（缩略图 + 标签 / 空态提示）。
+     *
+     * <p>调用方已经把绘制裁剪到 {@code (left,top)-(right,bottom)}，所以这里只负责
+     * "把缩略图压到放得下的尺寸"，不必再逐行判断越界。
+     */
+    private void drawPreviewContent(GuiGraphicsExtractor context, int left, int right,
+                                    int top, int bottom, float alpha) {
+        int availableHeight = Math.max(0, bottom - top);
         WardrobeEntry entry = this.selected;
         if (entry == null) {
             // 未选中：画一个空的物品格 + 提示文字。
             // 原版界面里不会出现"一整片没有格子的空白"，空区域也是格子 —— 这样预览栏
             // 在未选中时看起来仍然像容器界面的一部分，而不是漏画了一块。
             int boxSize = Math.min(64, Math.max(24, previewWidth - 2 * padding));
+            // 高度也要夹：矮窗口下 64px 的格子会顶到面板外
+            boxSize = Math.max(16, Math.min(boxSize,
+                    Math.max(16, availableHeight - 2 * padding - 2 * LINE_HEIGHT)));
             int boxX = left + (previewWidth - boxSize) / 2;
             int boxY = top + padding;
             VanillaStyle.slot(context, boxX, boxY, boxSize, boxSize, alpha);
@@ -945,7 +1001,10 @@ public final class WardrobeScreen extends Screen {
             return;
         }
 
-        int thumbSize = Math.max(16, Math.min(PREVIEW_THUMB_MAX, previewWidth - 2 * padding));
+        // 缩略图同时受宽度和高度约束：矮窗口下按高度缩，避免"缩略图比面板还高"
+        int thumbByHeight = Math.max(16, availableHeight - 2 * padding - 4 * LINE_HEIGHT);
+        int thumbSize = Math.max(16, Math.min(PREVIEW_THUMB_MAX,
+                Math.min(previewWidth - 2 * padding, thumbByHeight)));
         int thumbX = left + (previewWidth - thumbSize) / 2;
         int thumbY = top + padding;
         // 缩略图放在原版物品格里（和中间网格的卡片同一套语言）
@@ -1172,7 +1231,10 @@ public final class WardrobeScreen extends Screen {
         if (super.mouseScrolled(mouseX, mouseY, scrollX, scrollY)) {
             return true;
         }
-        if (!isInside(mouseX, mouseY, gridX, gridY, gridWidth, gridHeight)) {
+        // 命中区域和"看得见的可滚动区域"保持一致：滚动条本身也算（它画在网格右侧的
+        // padding 里，玩家很自然会对着它滚轮 —— 旧实现只在网格矩形内响应，滚到滚动条上就失灵）
+        if (!isInside(mouseX, mouseY, gridX, gridY, gridWidth, gridHeight)
+                && !isOverScrollBar(mouseX, mouseY)) {
             return false;
         }
         int delta = (int) Math.round(scrollY * SCROLL_STEP);
@@ -1662,16 +1724,14 @@ public final class WardrobeScreen extends Screen {
 
     // ==================== 绘制工具 ====================
 
-    /** 给颜色乘一个透明度系数（用于打开动画淡入）。 */
+    /**
+     * 给颜色乘一个透明度系数（用于打开动画淡入）。
+     *
+     * <p>实现只有一份（{@link VanillaStyle#withAlpha}）：这个类原本自己抄了一遍同样的公式，
+     * 一旦有人给其中一处加"钳到 0..255"之类的修正，两处就会画出不同的透明度。
+     */
     private static int withAlpha(int color, float factor) {
-        if (factor >= 1.0f) {
-            return color;
-        }
-        if (factor <= 0.0f) {
-            return color & 0x00FFFFFF;
-        }
-        int a = (int) (((color >>> 24) & 0xFF) * factor);
-        return (a << 24) | (color & 0x00FFFFFF);
+        return VanillaStyle.withAlpha(color, factor);
     }
 
     private static int clamp(int value, int min, int max) {

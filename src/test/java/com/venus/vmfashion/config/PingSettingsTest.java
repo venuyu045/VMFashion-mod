@@ -111,6 +111,20 @@ class PingSettingsTest {
     }
 
     @Test
+    void shouldKeepLocalPingFollowsDegradeSwitch() {
+        // v2.0.1：degradeToLocal 之前形同虚设（中继不可用时无条件把标点塞进本地 store）。
+        // 现在的语义：在线 → 一定显示；不在线 → 只看 degradeToLocal。
+        PingSettings settings = new PingSettings();
+        assertTrue(settings.isDegradeToLocal(), "默认开：中继不可用时本地标点仍然可见");
+        assertTrue(settings.shouldKeepLocalPing(true));
+        assertTrue(settings.shouldKeepLocalPing(false));
+
+        settings.setDegradeToLocal(false);
+        assertTrue(settings.shouldKeepLocalPing(true), "中继在线时照常显示");
+        assertFalse(settings.shouldKeepLocalPing(false), "关掉降级后，中继不可用就不该留下本地标点");
+    }
+
+    @Test
     void relayEnabledRequiresSwitchAndBackend() {
         PingSettings settings = new PingSettings();
         assertTrue(settings.relayEnabled(OFFICIAL_FASHION));

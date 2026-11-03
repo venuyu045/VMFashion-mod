@@ -47,15 +47,25 @@ public final class EdgeIndicator {
     }
 
     /**
+     * 安全区边距：默认 {@link PingSettings.UI#EDGE_INDICATOR_MARGIN}，窗口特别小
+     * （或 GUI 缩放很大）时自动缩小，否则安全区会翻过来。
+     *
+     * <p>抽成 public 是为了让 {@link PingRenderer} 算"箭头在边上的坐标"时用<b>同一个</b>边距：
+     * 两边各算一份就会出现"堆叠分组按 A 边距、箭头画在 B 边距"的错位。
+     */
+    public static int marginFor(int width, int height) {
+        int margin = PingSettings.UI.EDGE_INDICATOR_MARGIN;
+        return Math.min(margin, Math.max(2, Math.min(width, height) / 8));
+    }
+
+    /**
      * 每帧调用一次：按当前视口算出安全区。
      *
      * @param width  视口宽（GUI 逻辑像素）
      * @param height 视口高
      */
     public static void prepare(int width, int height) {
-        int margin = PingSettings.UI.EDGE_INDICATOR_MARGIN;
-        // 窗口特别小（或 GUI 缩放很大）时自动缩小边距，否则安全区会翻过来
-        margin = Math.min(margin, Math.max(2, Math.min(width, height) / 8));
+        float margin = marginFor(width, height);
         safeLeft = margin;
         safeTop = margin;
         safeRight = Math.max(safeLeft + 1, width - margin);
